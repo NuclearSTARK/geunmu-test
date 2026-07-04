@@ -1,5 +1,5 @@
 const { useState, useEffect, useRef, useCallback } = React;
-const APP_VERSION = "5.1.4-patch1";
+const APP_VERSION = "5.1.4-drag-order-fix";
 // ver5.0: 파일 분리(index.html / app.js / firebase.js / styles.css), ver4.9 기능 포함
 
 
@@ -760,11 +760,18 @@ function App() {
   const moveShiftOrderToIndex = (shift, from, to) => {
     setShiftOrders(prev => {
       const current = normalizeShiftOrders(prev, division, workerCount);
-      const arr = [...(current[shift] || getIdentityShiftOrders(workerCount)[shift])];
+      const baseOrder = shift === 'CYCLE'
+        ? getCycleOrder(current, workerCount)
+        : (current[shift] || getIdentityShiftOrders(workerCount)[shift]);
+      const arr = [...baseOrder];
       const safeTo = Math.max(0, Math.min(arr.length - 1, to));
       if (from === safeTo) return current;
       const [picked] = arr.splice(from, 1);
       arr.splice(safeTo, 0, picked);
+      if (shift === 'CYCLE') {
+        // 근무자 순서를 직접 드래그 수정하면 이후 회전 기준도 이 순서로 고정
+        return { ...current, CYCLE: arr, N: arr, A: arr, D: arr };
+      }
       return { ...current, [shift]: arr };
     });
   };
@@ -874,7 +881,7 @@ function App() {
                 <div style={{ color:'#f8fafc', fontSize:12, fontWeight:950 }}>근무별순서</div>
                 <button onClick={() => setCOrderEditMode(v => !v)} style={{ ...buttonBase, background:cOrderEditMode?'#059669':'#334155', padding:'4px 7px', fontSize:10 }}>{cOrderEditMode ? '완료' : '수정'}</button>
               </div>
-              <div style={{ fontSize:9, color:'#64748b', margin:'5px 0 7px' }}>수정 버튼을 눌렀을 때만 저장된 근무자 명단 기준으로 순서 회전 가능</div>
+              <div style={{ fontSize:9, color:'#64748b', margin:'5px 0 7px' }}>수정 버튼을 눌렀을 때만 순서 회전/좌우 드래그 가능</div>
               <div style={{ display:'grid', gap:5 }}>
                 {(() => {
                   const normalizedOrders = normalizeShiftOrders(shiftOrders, division, workerCount);
@@ -884,9 +891,9 @@ function App() {
                       <div style={{ fontSize:10, fontWeight:950, color:'#f8fafc' }}>근무자 순서</div>
                       <button disabled={!cOrderEditMode} onClick={rotateSavedWorkerOrder} style={{ ...buttonBase, background:cOrderEditMode?'#2563eb':'#334155', opacity:cOrderEditMode?1:.45, padding:'4px 7px', fontSize:10 }}>↻ 순서 회전</button>
                     </div>
-                    <div style={{ display:'flex', gap:5, overflowX:'auto', paddingBottom:2 }}>
-                      {cycleOrder.map((nameIdx, idx) => <div key={`cycle-${nameIdx}-${idx}`} style={{ minWidth:50, flex:'0 0 auto', textAlign:'center', padding:'5px 7px', borderRadius:999, background:'#1e293b', border:'1px solid #475569', fontSize:10, fontWeight:950 }}>
-                        {names[nameIdx] || inputNames[nameIdx] || `근무자${nameIdx+1}`}
+                    <div onPointerMove={e=>handleShiftOrderMove(e, 'CYCLE')} onPointerUp={endShiftOrderDrag} onPointerCancel={endShiftOrderDrag} style={{ display:'flex', gap:5, overflowX:'auto', paddingBottom:2 }}>
+                      {cycleOrder.map((nameIdx, idx) => <div key={`cycle-${nameIdx}-${idx}`} data-order-card="true" onPointerDown={e=>startShiftOrderDrag(e, 'CYCLE', idx)} style={{ minWidth:50, flex:'0 0 auto', textAlign:'center', padding:'5px 7px', borderRadius:999, background:draggingOrder?.shift==='CYCLE' && draggingOrder?.idx===idx ? '#334155' : '#1e293b', border:cOrderEditMode?'1px solid #f59e0b':'1px solid #475569', cursor:cOrderEditMode?'grab':'default', touchAction:'none', userSelect:'none', fontSize:10, fontWeight:950 }}>
+                        <span style={{ marginRight:3, color:cOrderEditMode?'#fbbf24':'#64748b', fontSize:9 }}>{cOrderEditMode?'↔':''}</span>{names[nameIdx] || inputNames[nameIdx] || `근무자${nameIdx+1}`}
                       </div>)}
                     </div>
                   </div>;
@@ -899,9 +906,9 @@ function App() {
                       <div style={{ fontSize:10, fontWeight:950, color:SHIFT_COLORS[sh]?.bg === '#1a56db' ? '#93c5fd' : sh === 'A' ? '#86efac' : '#fbbf24' }}>{sh} 순서</div>
                       <button disabled={!cOrderEditMode} onClick={()=>rotateShiftOrder(sh)} style={{ ...buttonBase, background:cOrderEditMode?'#2563eb':'#334155', opacity:cOrderEditMode?1:.45, padding:'4px 7px', fontSize:10 }}>↻ 회전</button>
                     </div>
-                    <div style={{ display:'flex', gap:5, overflowX:'auto', paddingBottom:2 }}>
-                      {order.map((nameIdx, idx) => <div key={`${sh}-${nameIdx}-${idx}`} data-order-card="true" style={{ minWidth:50, flex:'0 0 auto', textAlign:'center', padding:'5px 7px', borderRadius:999, background:'#1e293b', border:'1px solid #475569', fontSize:10, fontWeight:950 }}>
-                        {names[nameIdx] || inputNames[nameIdx] || `근무자${nameIdx+1}`}
+                    <div onPointerMove={e=>handleShiftOrderMove(e, sh)} onPointerUp={endShiftOrderDrag} onPointerCancel={endShiftOrderDrag} style={{ display:'flex', gap:5, overflowX:'auto', paddingBottom:2 }}>
+                      {order.map((nameIdx, idx) => <div key={`${sh}-${nameIdx}-${idx}`} data-order-card="true" onPointerDown={e=>startShiftOrderDrag(e, sh, idx)} style={{ minWidth:50, flex:'0 0 auto', textAlign:'center', padding:'5px 7px', borderRadius:999, background:draggingOrder?.shift===sh && draggingOrder?.idx===idx ? '#334155' : '#1e293b', border:cOrderEditMode?'1px solid #f59e0b':'1px solid #475569', cursor:cOrderEditMode?'grab':'default', touchAction:'none', userSelect:'none', fontSize:10, fontWeight:950 }}>
+                        <span style={{ marginRight:3, color:cOrderEditMode?'#fbbf24':'#64748b', fontSize:9 }}>{cOrderEditMode?'↔':''}</span>{names[nameIdx] || inputNames[nameIdx] || `근무자${nameIdx+1}`}
                       </div>)}
                     </div>
                   </div>;
