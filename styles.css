@@ -6,7 +6,17 @@
     ::-webkit-scrollbar-track { background: #1e293b; }
     ::-webkit-scrollbar-thumb { background: #475569; border-radius: 2px; }
 
-.notice-marquee{margin:0 0 10px;background:#020617;border:1px solid #334155;border-radius:10px;overflow:hidden;height:34px;display:flex;align-items:center;white-space:nowrap;color:#fde68a;font-size:13px;font-weight:900}
-.notice-marquee span{display:inline-block;padding-left:100%;animation:spMarquee 16s linear infinite}
-@keyframes spMarquee{0%{transform:translateX(0)}100%{transform:translateX(-100%)}}
-@media(max-width:520px){body{font-size:14px}select,input,button,textarea{max-width:100%}.notice-marquee{height:32px;font-size:12px}}
+/* Global notice marquee */
+.notice-marquee {
+  display: inline-block;
+  min-width: 200%;
+  padding-left: 100%;
+  animation: spNoticeMarquee 18s linear infinite;
+}
+@keyframes spNoticeMarquee {
+  0% { transform: translateX(0); }
+  100% { transform: translateX(-50%); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .notice-marquee { animation: none; padding-left: 12px; min-width: auto; }
+}

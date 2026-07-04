@@ -1,5 +1,5 @@
 const { useState, useEffect, useRef, useCallback } = React;
-const APP_VERSION = "5.1.4";
+const APP_VERSION = "5.1.4-patch1";
 // ver5.0: 파일 분리(index.html / app.js / firebase.js / styles.css), ver4.9 기능 포함
 
 
@@ -349,7 +349,7 @@ function makeEmployeeId(employees) {
 function normalizeEmployee(raw, id) {
   return {
     id,
-    name: String(raw?.realName || raw?.name || "").trim(),
+    name: String(raw?.name || "").trim(),
     outputName: String(raw?.outputName || raw?.displayName || raw?.name || "").trim(),
     band: raw?.band || "A반",
     active: raw?.active !== false,
@@ -419,13 +419,8 @@ function App() {
   const [isAdminMode, setIsAdminMode] = useState(false);
   const [employees, setEmployees] = useState({});
   const [employeeForm, setEmployeeForm] = useState({ name:'', band:'A반', outputName:'' });
-  const [advancedBand, setAdvancedBand] = useState(initBand);
-  const [advancedSettings, setAdvancedSettings] = useState(() => {
-    try { return JSON.parse(localStorage.getItem('sp_advanced_settings') || '{}'); } catch { return {}; }
-  });
-  const [noticeText, setNoticeText] = useState(() => {
-    try { return localStorage.getItem('sp_notice_text') || ''; } catch { return ''; }
-  });
+  const [globalNotice, setGlobalNotice] = useState({ text:'', enabled:false, urgent:false });
+  const [noticeForm, setNoticeForm] = useState({ text:'', enabled:false, urgent:false });
 
   const [positionEditMode, setPositionEditMode] = useState(false);
   const [positionSectionOpen, setPositionSectionOpen] = useState(false);
@@ -450,19 +445,6 @@ function App() {
 
   const employeeList = sortEmployees(Object.entries(employees || {}).map(([id, raw]) => normalizeEmployee(raw, id)));
   const activeEmployeeList = employeeList.filter(emp => emp.active && emp.name);
-  const getBandAdvanced = (targetBand = band) => ({
-    positionOrder: true,
-    shiftOrder: targetBand === 'C반',
-    ...(advancedSettings?.[targetBand] || {})
-  });
-  const activeAdvanced = getBandAdvanced(band);
-  const updateBandAdvanced = (targetBand, key, value) => {
-    setAdvancedSettings(prev => {
-      const next = { ...prev, [targetBand]: { ...getBandAdvanced(targetBand), [key]: value } };
-      localStorage.setItem('sp_advanced_settings', JSON.stringify(next));
-      return next;
-    });
-  };
 
   const getEmployeeDisplayName = (emp) => String(emp.outputName || emp.name || '').trim();
   const cleanLabel = (value) => String(value || '').replace(/\(.*\)/, '').trim();
@@ -475,6 +457,29 @@ function App() {
       if (cancelled) return;
       if (!window.firebaseDB) { setTimeout(attach, 200); return; }
       unsubscribe = window.firebaseDB.listen('employees', data => { if (!cancelled) setEmployees(data || {}); });
+    };
+    attach();
+    return () => { cancelled = true; if (typeof unsubscribe === 'function') unsubscribe(); };
+  }, []);
+
+  useEffect(() => {
+    let unsubscribe = null;
+    let cancelled = false;
+    const attach = () => {
+      if (cancelled) return;
+      if (!window.firebaseDB) { setTimeout(attach, 200); return; }
+      // 전역 공지: 월/반/발전과 무관하게 모든 사용자에게 동일 적용
+      unsubscribe = window.firebaseDB.listen('settings/globalNotice', data => {
+        if (cancelled) return;
+        const next = {
+          text: String(data?.text || ''),
+          enabled: Boolean(data?.enabled),
+          urgent: Boolean(data?.urgent),
+          updatedAt: data?.updatedAt || ''
+        };
+        setGlobalNotice(next);
+        setNoticeForm({ text: next.text, enabled: next.enabled, urgent: next.urgent });
+      });
     };
     attach();
     return () => { cancelled = true; if (typeof unsubscribe === 'function') unsubscribe(); };
@@ -566,7 +571,7 @@ function App() {
     if (!name) { alert('이름을 입력해주세요.'); return; }
     const id = makeEmployeeId(employees);
     const now = new Date().toISOString();
-    await window.firebaseDB?.save(`employees/${id}`, { id, realName:name, name, outputName, band:employeeForm.band, active:true, createdAt:now, updatedAt:now });
+    await window.firebaseDB?.save(`employees/${id}`, { id, name, outputName, band:employeeForm.band, active:true, createdAt:now, updatedAt:now });
     setEmployeeForm({ name:'', band:employeeForm.band, outputName:'' });
   };
 
@@ -579,6 +584,26 @@ function App() {
     if (!confirm(`${targetBand} 직원DB를 전체 삭제할까요?`)) return;
     const targets = employeeList.filter(emp => emp.band === targetBand && emp.active);
     await Promise.all(targets.map(emp => window.firebaseDB?.save(`employees/${emp.id}`, { ...(employees[emp.id] || {}), id:emp.id, active:false, updatedAt:new Date().toISOString() })));
+  };
+
+  const saveGlobalNotice = async () => {
+    const payload = {
+      text: String(noticeForm.text || '').trim(),
+      enabled: Boolean(noticeForm.enabled) && Boolean(String(noticeForm.text || '').trim()),
+      urgent: Boolean(noticeForm.urgent),
+      updatedAt: new Date().toISOString()
+    };
+    await window.firebaseDB?.save('settings/globalNotice', payload);
+    setSavedToast(true);
+    setTimeout(() => setSavedToast(false), 1400);
+  };
+
+  const clearGlobalNotice = async () => {
+    if (!confirm('공지사항을 삭제할까요?')) return;
+    const payload = { text:'', enabled:false, urgent:false, updatedAt:new Date().toISOString() };
+    await window.firebaseDB?.save('settings/globalNotice', payload);
+    setSavedToast(true);
+    setTimeout(() => setSavedToast(false), 1400);
   };
 
   const getWorkerOptions = (slotIdx) => {
@@ -717,7 +742,7 @@ function App() {
           <div style={{ display:'flex', alignItems:'center', gap:10 }}>
             <img src="./icon-192.png" style={{ width:42, height:42, borderRadius:11 }} />
             <div>
-              <div style={{ fontSize:24, fontWeight:950, letterSpacing:'-0.5px' }}>Seul Police</div>
+              <div style={{ fontSize:24, fontWeight:950, letterSpacing:'-0.5px' }}>SEUL-POLICE</div>
               <div style={{ fontSize:12, color:'#94a3b8', fontWeight:700 }}>{band} {division} 근무자 배치 자동화</div>
             </div>
           </div>
@@ -736,7 +761,12 @@ function App() {
           <span style={{ fontSize:12, color:'#94a3b8', fontWeight:800, padding:'8px 10px', background:'#0f172a', border:'1px solid #334155', borderRadius:8 }}>근무자 {workerCount}명</span>
         </div>
 
-        {noticeText && <div className="notice-marquee"><span>📢 {noticeText}</span></div>}
+        {globalNotice.enabled && globalNotice.text && <div style={{ overflow:'hidden', whiteSpace:'nowrap', background:globalNotice.urgent?'linear-gradient(135deg,#7f1d1d,#991b1b)':'linear-gradient(135deg,#0f172a,#1e293b)', border:globalNotice.urgent?'1px solid #ef4444':'1px solid #334155', color:'#f8fafc', borderRadius:10, padding:'8px 0', marginBottom:10, boxShadow:'0 10px 25px rgba(0,0,0,.2)' }}>
+          <div className="notice-marquee" style={{ fontSize:13, fontWeight:900 }}>
+            <span style={{ marginRight:40 }}>{globalNotice.urgent ? '🚨 긴급공지' : '📢 공지'} · {globalNotice.text}</span>
+            <span style={{ marginRight:40 }}>{globalNotice.urgent ? '🚨 긴급공지' : '📢 공지'} · {globalNotice.text}</span>
+          </div>
+        </div>}
 
         <div style={{ background:'#111827', border:'1px solid #334155', borderRadius:12, padding:'9px 10px', marginBottom:10 }}>
           <button onClick={() => setWorkSettingOpen(v => !v)} style={{ width:'100%', border:'none', background:'transparent', color:'#f8fafc', fontSize:14, fontWeight:950, cursor:'pointer', display:'flex', alignItems:'center', justifyContent:'space-between', padding:0 }}>
@@ -749,9 +779,8 @@ function App() {
               <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', gap:8, marginBottom:8 }}>
                 <div>
                   <div style={{ fontSize:13, fontWeight:900 }}>근무자 선택</div>
-                  <div style={{ fontSize:10, color:'#64748b' }}>{band} 직원 DB만 표시 · 중복 선택 방지</div>
+                  <div style={{ fontSize:10, color:'#64748b' }}>{band} 직원 DB만 자동 표시 · 중복 선택 방지</div>
                 </div>
-                <button onClick={() => applyBandEmployees(band)} style={{ ...buttonBase, background:'#334155', padding:'5px 8px', fontSize:10 }}>DB명단 적용</button>
               </div>
               <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(120px,1fr))', gap:6 }}>
                 {inputNames.map((name, idx) => <select key={idx} value={name} onChange={e=>setWorkerNameAt(idx,e.target.value)} style={{ ...selectStyle, padding:'7px 9px', fontSize:12 }}>
@@ -761,7 +790,7 @@ function App() {
               </div>
             </div>
 
-            {activeAdvanced.positionOrder && <div style={{ background:'#0f172a', border:'1px solid #334155', borderRadius:10, padding:'8px 9px' }}>
+            <div style={{ background:'#0f172a', border:'1px solid #334155', borderRadius:10, padding:'8px 9px' }}>
               <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:8 }}>
                 <div style={{ color:'#f8fafc', fontSize:12, fontWeight:950 }}>근무지순서</div>
                 <button onClick={() => setPositionEditMode(v => !v)} style={{ ...buttonBase, background:positionEditMode?'#059669':'#334155', padding:'4px 7px', fontSize:10 }}>{positionEditMode ? '완료' : '수정'}</button>
@@ -772,11 +801,11 @@ function App() {
                   <span style={{ marginRight:3, color:positionEditMode?'#fbbf24':'#64748b', fontSize:9 }}>{positionEditMode?'↔':'·'}</span>{label}
                 </div>)}
               </div>
-            </div>}
+            </div>
 
-            {activeAdvanced.shiftOrder && <div style={{ background:'#0f172a', border:'1px solid #334155', borderRadius:10, padding:'8px 9px' }}>
+            {band === 'C반' && <div style={{ background:'#0f172a', border:'1px solid #334155', borderRadius:10, padding:'8px 9px' }}>
               <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:8 }}>
-                <div style={{ color:'#f8fafc', fontSize:12, fontWeight:950 }}>근무별순서</div>
+                <div style={{ color:'#f8fafc', fontSize:12, fontWeight:950 }}>C반 근무별순서</div>
                 <button onClick={() => setCOrderEditMode(v => !v)} style={{ ...buttonBase, background:cOrderEditMode?'#059669':'#334155', padding:'4px 7px', fontSize:10 }}>{cOrderEditMode ? '완료' : '수정'}</button>
               </div>
               <div style={{ fontSize:9, color:'#64748b', margin:'5px 0 7px' }}>수정 버튼을 눌러야 N/A/D 순서 드래그 가능</div>
@@ -822,50 +851,30 @@ function App() {
         </div>
 
         <div style={{ marginTop:8, fontSize:11, color:'#86efac', textAlign:'center', background:'#052e16', border:'1px solid #14532d', borderRadius:8, padding:'7px 12px' }}>💾 Firebase 자동 저장 · {syncStatus}</div>
-        <div style={{ marginTop:22, paddingTop:18, borderTop:'1px solid #334155', textAlign:'center', color:'#94a3b8', fontWeight:800 }}>Made by Hyungdai<br/><span style={{ color:'#f8fafc', fontSize:20, fontWeight:950 }}>Seul Police</span><br/><span style={{fontSize:10,color:'#64748b'}}>v{APP_VERSION}</span></div>
+        <div style={{ marginTop:22, paddingTop:18, borderTop:'1px solid #334155', textAlign:'center', color:'#94a3b8', fontWeight:800 }}>Made by Hyungdai<br/><span style={{ color:'#f8fafc', fontSize:24, fontWeight:950 }}>SEUL-POLICE</span></div>
 
         {settingsOpen && <div style={{ position:'fixed', inset:0, background:'rgba(2,6,23,.78)', zIndex:999, display:'flex', alignItems:'center', justifyContent:'center', padding:14 }}>
-          <div style={{ width:'min(520px,100%)', maxHeight:'92dvh', overflow:'auto', background:'#0f172a', border:'1px solid #334155', borderRadius:16, padding:16, boxShadow:'0 20px 80px rgba(0,0,0,.45)' }}>
+          <div style={{ width:'min(760px,100%)', maxHeight:'88vh', overflow:'auto', background:'#0f172a', border:'1px solid #334155', borderRadius:16, padding:16, boxShadow:'0 20px 80px rgba(0,0,0,.45)' }}>
             <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:12 }}>
               <div style={{ fontSize:20, fontWeight:950 }}>설정</div>
               <button onClick={()=>setSettingsOpen(false)} style={{ ...buttonBase, background:'#334155', width:34, height:34 }}>×</button>
             </div>
-            <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr 1fr', gap:6, marginBottom:14 }}>
-              <button onClick={()=>setSettingsTab('personal')} style={{ ...buttonBase, background:settingsTab==='personal'?'#2563eb':'#1e293b', padding:'9px 6px', fontSize:12 }}>개인설정</button>
-              <button onClick={()=>setSettingsTab('advanced')} style={{ ...buttonBase, background:settingsTab==='advanced'?'#2563eb':'#1e293b', padding:'9px 6px', fontSize:12 }}>반별 고급설정</button>
-              <button onClick={()=>setSettingsTab('admin')} style={{ ...buttonBase, background:settingsTab==='admin'?'#2563eb':'#1e293b', padding:'9px 6px', fontSize:12 }}>관리자설정</button>
+            <div style={{ display:'flex', gap:8, marginBottom:14 }}>
+              <button onClick={()=>setSettingsTab('personal')} style={{ ...buttonBase, background:settingsTab==='personal'?'#2563eb':'#1e293b', padding:'9px 13px' }}>개인설정</button>
+              <button onClick={()=>setSettingsTab('admin')} style={{ ...buttonBase, background:settingsTab==='admin'?'#2563eb':'#1e293b', padding:'9px 13px' }}>관리자설정</button>
             </div>
 
             {settingsTab === 'personal' && <div style={{ display:'grid', gap:12 }}>
-              <label style={{ fontSize:12, color:'#94a3b8', fontWeight:900 }}>나의 반</label>
-              <select value={personalBand} onChange={e=>{ setPersonalBand(e.target.value); setPersonalName(''); }} style={selectStyle}>{EMPLOYEE_BANDS.map(b=><option key={b}>{b}</option>)}</select>
-              <label style={{ fontSize:12, color:'#94a3b8', fontWeight:900 }}>이름</label>
+              <label style={{ fontSize:12, color:'#94a3b8', fontWeight:900 }}>나의 이름</label>
               <select value={personalName} onChange={e=>setPersonalName(e.target.value)} style={selectStyle}>
                 <option value="">선택 안 함</option>
-                {activeEmployeeList.filter(emp=>emp.band===personalBand).map(emp=><option key={emp.id} value={emp.name}>{emp.name}</option>)}
+                {activeEmployeeList.filter(emp=>emp.band===personalBand).map(emp=><option key={emp.id} value={emp.name}>{emp.name} ({getEmployeeDisplayName(emp)})</option>)}
               </select>
+              <label style={{ fontSize:12, color:'#94a3b8', fontWeight:900 }}>나의 반</label>
+              <select value={personalBand} onChange={e=>setPersonalBand(e.target.value)} style={selectStyle}>{EMPLOYEE_BANDS.map(b=><option key={b}>{b}</option>)}</select>
               <label style={{ fontSize:12, color:'#94a3b8', fontWeight:900 }}>나의 근무지</label>
               <select value={personalDivision} onChange={e=>setPersonalDivision(e.target.value)} style={selectStyle}>{['1발전','2발전'].map(d=><option key={d}>{d}</option>)}</select>
               <button onClick={savePersonalSettings} style={{ ...buttonBase, background:'linear-gradient(135deg,#0ea5e9,#2563eb)', padding:'11px 14px' }}>개인설정 저장</button>
-            </div>}
-
-            {settingsTab === 'advanced' && <div style={{ display:'grid', gap:12 }}>
-              <div style={{ background:'#111827', border:'1px solid #334155', borderRadius:12, padding:12 }}>
-                <label style={{ fontSize:12, color:'#94a3b8', fontWeight:900 }}>반 선택</label>
-                <select value={advancedBand} onChange={e=>setAdvancedBand(e.target.value)} style={{ ...selectStyle, width:'100%', marginTop:6 }}>{EMPLOYEE_BANDS.map(b=><option key={b}>{b}</option>)}</select>
-              </div>
-              <div style={{ background:'#111827', border:'1px solid #334155', borderRadius:12, padding:12, display:'grid', gap:10 }}>
-                <label style={{ display:'flex', alignItems:'center', justifyContent:'space-between', gap:12, fontWeight:900 }}>
-                  <span>근무지순서 사용</span>
-                  <input type="checkbox" checked={!!getBandAdvanced(advancedBand).positionOrder} onChange={e=>updateBandAdvanced(advancedBand,'positionOrder',e.target.checked)} />
-                </label>
-                <div style={{ color:'#64748b', fontSize:11 }}>켜면 메인 근무지설정에서 근무지 순서를 좌우 이동으로 수정할 수 있어요.</div>
-                <label style={{ display:'flex', alignItems:'center', justifyContent:'space-between', gap:12, fontWeight:900 }}>
-                  <span>근무별순서 사용</span>
-                  <input type="checkbox" checked={!!getBandAdvanced(advancedBand).shiftOrder} onChange={e=>updateBandAdvanced(advancedBand,'shiftOrder',e.target.checked)} />
-                </label>
-                <div style={{ color:'#64748b', fontSize:11 }}>켜면 해당 반에서 N/A/D 근무별 순서 설정이 표시돼요. 기본은 C반만 켜짐.</div>
-              </div>
             </div>}
 
             {settingsTab === 'admin' && <div>
@@ -875,7 +884,7 @@ function App() {
               </div> : <div style={{ display:'grid', gap:14 }}>
                 <div style={{ background:'#111827', border:'1px solid #334155', borderRadius:12, padding:12 }}>
                   <div style={{ fontWeight:950, marginBottom:10 }}>직원 DB 관리</div>
-                  <div style={{ display:'grid', gridTemplateColumns:'1fr', gap:8 }}>
+                  <div style={{ display:'grid', gridTemplateColumns:'1fr 120px 1fr auto', gap:8 }}>
                     <input value={employeeForm.name} onChange={e=>setEmployeeForm(f=>({...f,name:e.target.value}))} placeholder="실명 예: 문태헌" style={selectStyle} />
                     <select value={employeeForm.band} onChange={e=>setEmployeeForm(f=>({...f,band:e.target.value}))} style={selectStyle}>{EMPLOYEE_BANDS.map(b=><option key={b}>{b}</option>)}</select>
                     <input value={employeeForm.outputName} onChange={e=>setEmployeeForm(f=>({...f,outputName:e.target.value}))} placeholder="출력이름 예: 태헌 / 진수A" style={selectStyle} />
@@ -897,12 +906,21 @@ function App() {
                   </div>
                 </div>
                 <div style={{ background:'#111827', border:'1px solid #334155', borderRadius:12, padding:12 }}>
-                  <div style={{ fontWeight:950, marginBottom:8 }}>공지사항 관리</div>
-                  <textarea value={noticeText} onChange={e=>setNoticeText(e.target.value)} placeholder="메인에 표시할 공지사항" style={{ ...selectStyle, width:'100%', minHeight:70, resize:'vertical' }} />
-                  <div style={{ display:'flex', gap:8, marginTop:8 }}>
-                    <button onClick={()=>{localStorage.setItem('sp_notice_text', noticeText); setSavedToast(true); setTimeout(()=>setSavedToast(false),1400);}} style={{ ...buttonBase, background:'#2563eb', padding:'8px 11px' }}>공지 저장</button>
-                    <button onClick={()=>{setNoticeText(''); localStorage.removeItem('sp_notice_text');}} style={{ ...buttonBase, background:'#334155', padding:'8px 11px' }}>공지 삭제</button>
+                  <div style={{ fontWeight:950, marginBottom:10 }}>공지사항 관리</div>
+                  <textarea value={noticeForm.text} onChange={e=>setNoticeForm(f=>({...f,text:e.target.value}))} placeholder="전체 사용자에게 표시할 공지사항" style={{ ...selectStyle, width:'100%', minHeight:70, resize:'vertical', boxSizing:'border-box', lineHeight:1.45 }} />
+                  <div style={{ display:'flex', gap:8, flexWrap:'wrap', alignItems:'center', marginTop:8 }}>
+                    <label style={{ display:'inline-flex', alignItems:'center', gap:6, fontSize:12, fontWeight:900, color:'#cbd5e1' }}>
+                      <input type="checkbox" checked={noticeForm.enabled} onChange={e=>setNoticeForm(f=>({...f,enabled:e.target.checked}))} /> 공지 표시
+                    </label>
+                    <label style={{ display:'inline-flex', alignItems:'center', gap:6, fontSize:12, fontWeight:900, color:'#fecaca' }}>
+                      <input type="checkbox" checked={noticeForm.urgent} onChange={e=>setNoticeForm(f=>({...f,urgent:e.target.checked}))} /> 긴급공지
+                    </label>
                   </div>
+                  <div style={{ display:'flex', gap:8, marginTop:10 }}>
+                    <button onClick={saveGlobalNotice} style={{ ...buttonBase, background:'#2563eb', padding:'9px 12px', fontSize:12 }}>공지 저장</button>
+                    <button onClick={clearGlobalNotice} style={{ ...buttonBase, background:'#7f1d1d', padding:'9px 12px', fontSize:12 }}>공지 삭제</button>
+                  </div>
+                  <div style={{ marginTop:8, fontSize:11, color:'#94a3b8' }}>저장 경로: settings/globalNotice · 월/반/발전과 무관하게 전체 적용</div>
                 </div>
 
                 <div style={{ background:'#111827', border:'1px solid #334155', borderRadius:12, padding:12 }}>
