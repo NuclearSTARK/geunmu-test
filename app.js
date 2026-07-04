@@ -338,32 +338,6 @@ function saveSetting(data) {
 // 이후 Firebase Authentication을 붙이면 실제 계정 기반 권한으로 바꿀 예정입니다.
 const ADMIN_EDIT_CODE = "seul2026";
 const EMPLOYEE_BANDS = ["A반","B반","C반","D반"];
-const DIVISIONS = ["1발전","2발전"];
-const ADVANCED_DEFAULTS = {
-  "A반": { positionOrder: false, shiftOrder: false },
-  "B반": { positionOrder: false, shiftOrder: false },
-  "C반": { positionOrder: false, shiftOrder: true },
-  "D반": { positionOrder: false, shiftOrder: false },
-};
-function loadLocalJson(key, fallback = {}) {
-  try { return JSON.parse(localStorage.getItem(key) || JSON.stringify(fallback)); } catch { return fallback; }
-}
-function saveLocalJson(key, value) { localStorage.setItem(key, JSON.stringify(value)); }
-function rotateArrayRight(arr) {
-  if (!Array.isArray(arr) || arr.length <= 1) return Array.isArray(arr) ? [...arr] : [];
-  return [arr[arr.length - 1], ...arr.slice(0, -1)];
-}
-function rotateArrayLeft(arr) {
-  if (!Array.isArray(arr) || arr.length <= 1) return Array.isArray(arr) ? [...arr] : [];
-  return [...arr.slice(1), arr[0]];
-}
-function stripParenName(value) {
-  return String(value || '').replace(/\s*\([^)]*\)\s*$/, '').trim();
-}
-function employeeRealName(emp) { return String(emp?.name || emp?.realName || '').trim(); }
-function employeeOutputName(emp) { return String(emp?.outputName || emp?.displayName || emp?.name || emp?.realName || '').trim(); }
-function getAnnouncementPath() { return 'appSettings/announcement'; }
-function getAdvancedSettingsPath() { return 'appSettings/advancedSettings'; }
 function makeEmployeeId(employees) {
   const nums = Object.keys(employees || {})
     .map(id => Number(String(id).replace(/[^0-9]/g, "")))
@@ -373,17 +347,10 @@ function makeEmployeeId(employees) {
 }
 
 function normalizeEmployee(raw, id) {
-  if (typeof raw === 'string') {
-    const name = raw.trim();
-    return { id, name, realName:name, outputName:name, band:"A반", active:true, createdAt:null, updatedAt:null };
-  }
-  const realName = String(raw?.realName || raw?.name || "").trim();
-  const outputName = String(raw?.outputName || raw?.displayName || raw?.name || raw?.realName || "").trim();
   return {
     id,
-    name: realName,
-    realName,
-    outputName,
+    name: String(raw?.realName || raw?.name || "").trim(),
+    outputName: String(raw?.outputName || raw?.displayName || raw?.name || "").trim(),
     band: raw?.band || "A반",
     active: raw?.active !== false,
     createdAt: raw?.createdAt || null,
@@ -425,14 +392,13 @@ function App() {
   const personal = (() => {
     try { return JSON.parse(localStorage.getItem('sp_personal_settings') || '{}'); } catch { return {}; }
   })();
-  const lastWork = loadLocalJson('sp_last_work', {});
-  const initBand = personal.band || lastWork.band || 'C반';
-  const initDivision = personal.division || lastWork.division || '1발전';
+  const initBand = personal.band || 'C반';
+  const initDivision = personal.division || '1발전';
 
   const [band, setBand] = useState(initBand);
   const [division, setDivision] = useState(initDivision);
-  const [selectedYear, setSelectedYear] = useState(lastWork.year || today.getFullYear());
-  const [selectedMonth, setSelectedMonth] = useState(lastWork.month || today.getMonth() + 1);
+  const [selectedYear, setSelectedYear] = useState(today.getFullYear());
+  const [selectedMonth, setSelectedMonth] = useState(today.getMonth() + 1);
   const [workerCount, setWorkerCount] = useState(4);
   const [names, setNames] = useState(DEFAULT_NAMES[4]);
   const [inputNames, setInputNames] = useState(DEFAULT_NAMES[4]);
@@ -442,11 +408,6 @@ function App() {
   const [syncStatus, setSyncStatus] = useState('Firebase 연결 준비중');
   const [isLoaded, setIsLoaded] = useState(false);
   const [savedToast, setSavedToast] = useState(false);
-  const [announcement, setAnnouncement] = useState({ text:'', urgent:false });
-  const [advancedSettings, setAdvancedSettings] = useState(ADVANCED_DEFAULTS);
-  const [advancedBand, setAdvancedBand] = useState(initBand);
-  const [recentNamesAvailable, setRecentNamesAvailable] = useState(!!localStorage.getItem('sp_recent_names'));
-  const [rotationIndex, setRotationIndex] = useState(1);
 
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsTab, setSettingsTab] = useState('personal');
@@ -458,6 +419,13 @@ function App() {
   const [isAdminMode, setIsAdminMode] = useState(false);
   const [employees, setEmployees] = useState({});
   const [employeeForm, setEmployeeForm] = useState({ name:'', band:'A반', outputName:'' });
+  const [advancedBand, setAdvancedBand] = useState(initBand);
+  const [advancedSettings, setAdvancedSettings] = useState(() => {
+    try { return JSON.parse(localStorage.getItem('sp_advanced_settings') || '{}'); } catch { return {}; }
+  });
+  const [noticeText, setNoticeText] = useState(() => {
+    try { return localStorage.getItem('sp_notice_text') || ''; } catch { return ''; }
+  });
 
   const [positionEditMode, setPositionEditMode] = useState(false);
   const [positionSectionOpen, setPositionSectionOpen] = useState(false);
@@ -482,8 +450,21 @@ function App() {
 
   const employeeList = sortEmployees(Object.entries(employees || {}).map(([id, raw]) => normalizeEmployee(raw, id)));
   const activeEmployeeList = employeeList.filter(emp => emp.active && emp.name);
+  const getBandAdvanced = (targetBand = band) => ({
+    positionOrder: true,
+    shiftOrder: targetBand === 'C반',
+    ...(advancedSettings?.[targetBand] || {})
+  });
+  const activeAdvanced = getBandAdvanced(band);
+  const updateBandAdvanced = (targetBand, key, value) => {
+    setAdvancedSettings(prev => {
+      const next = { ...prev, [targetBand]: { ...getBandAdvanced(targetBand), [key]: value } };
+      localStorage.setItem('sp_advanced_settings', JSON.stringify(next));
+      return next;
+    });
+  };
 
-  const getEmployeeDisplayName = (emp) => employeeOutputName(emp);
+  const getEmployeeDisplayName = (emp) => String(emp.outputName || emp.name || '').trim();
   const cleanLabel = (value) => String(value || '').replace(/\(.*\)/, '').trim();
   const isWeekendOrHoliday = (day) => day.dow === '토' || day.dow === '일' || day.holiday;
 
@@ -497,20 +478,6 @@ function App() {
     };
     attach();
     return () => { cancelled = true; if (typeof unsubscribe === 'function') unsubscribe(); };
-  }, []);
-
-  useEffect(() => {
-    let unAnn = null;
-    let unAdv = null;
-    let cancelled = false;
-    const attach = () => {
-      if (cancelled) return;
-      if (!window.firebaseDB) { setTimeout(attach, 200); return; }
-      unAnn = window.firebaseDB.listen(getAnnouncementPath(), data => { if (!cancelled) setAnnouncement(data || { text:'', urgent:false }); });
-      unAdv = window.firebaseDB.listen(getAdvancedSettingsPath(), data => { if (!cancelled) setAdvancedSettings({ ...ADVANCED_DEFAULTS, ...(data || {}) }); });
-    };
-    attach();
-    return () => { cancelled = true; if (typeof unAnn === 'function') unAnn(); if (typeof unAdv === 'function') unAdv(); };
   }, []);
 
   useEffect(() => {
@@ -552,10 +519,6 @@ function App() {
   }, [names, selectedYear, selectedMonth, division, workerCount, shiftOrders, band]);
 
   useEffect(() => {
-    saveLocalJson('sp_last_work', { year:selectedYear, month:selectedMonth, band, division });
-  }, [selectedYear, selectedMonth, band, division]);
-
-  useEffect(() => {
     if (!isLoaded || applyingRemoteRef.current) return;
     const core = makeSavableCore({ band, division, workerCount, names, shiftOrders, positionLabels });
     const coreJson = JSON.stringify(core);
@@ -567,7 +530,6 @@ function App() {
       saveSetting({ ...core, year:selectedYear, month:selectedMonth })?.then(() => {
         lastRemoteCoreRef.current = coreJson;
         setSyncStatus('저장 완료');
-        flashSaved();
         setTimeout(() => setSyncStatus('실시간 연결됨'), 1000);
       }).catch(() => setSyncStatus('저장 실패'));
     }, 350);
@@ -580,7 +542,6 @@ function App() {
     const nextNames = matched.slice(0, workerCount);
     setInputNames(nextNames);
     setNames(nextNames);
-    saveRecentNames(nextNames);
   }, [activeEmployeeList, band, workerCount]);
 
   useEffect(() => { applyBandEmployees(band); }, [employees, band, workerCount]);
@@ -605,7 +566,7 @@ function App() {
     if (!name) { alert('이름을 입력해주세요.'); return; }
     const id = makeEmployeeId(employees);
     const now = new Date().toISOString();
-    await window.firebaseDB?.save(`employees/${id}`, { id, name, realName:name, outputName, band:employeeForm.band, active:true, createdAt:now, updatedAt:now });
+    await window.firebaseDB?.save(`employees/${id}`, { id, realName:name, name, outputName, band:employeeForm.band, active:true, createdAt:now, updatedAt:now });
     setEmployeeForm({ name:'', band:employeeForm.band, outputName:'' });
   };
 
@@ -636,7 +597,7 @@ function App() {
     next[idx] = value;
     setInputNames(next);
     const trimmed = next.map(v => String(v || '').trim());
-    if (trimmed.every(Boolean) && new Set(trimmed).size === workerCount) { setNames(trimmed); saveRecentNames(trimmed); }
+    if (trimmed.every(Boolean) && new Set(trimmed).size === workerCount) setNames(trimmed);
   };
 
   const handleWorkerCountChange = (count) => {
@@ -745,89 +706,22 @@ function App() {
     }
   };
 
-
-  const flashSaved = () => { setSavedToast(true); setTimeout(() => setSavedToast(false), 1100); };
-
-  const goToday = () => {
-    const now = new Date();
-    setSelectedYear(now.getFullYear());
-    setSelectedMonth(now.getMonth() + 1);
-  };
-
-  const saveRecentNames = (nextNames = names) => {
-    const clean = nextNames.map(v => String(v || '').trim()).filter(Boolean);
-    if (clean.length) { saveLocalJson('sp_recent_names', clean); setRecentNamesAvailable(true); }
-  };
-
-  const loadRecentNames = () => {
-    const recent = loadLocalJson('sp_recent_names', []);
-    if (!Array.isArray(recent) || recent.length === 0) { alert('최근 근무자 기록이 없어요.'); return; }
-    const next = recent.slice(0, workerCount);
-    while (next.length < workerCount) next.push('');
-    setInputNames(next);
-    if (next.every(Boolean) && new Set(next).size === workerCount) setNames(next);
-  };
-
-  const rotateWorkers = () => {
-    const next = rotateArrayRight(inputNames.slice(0, workerCount));
-    setInputNames(next);
-    if (next.every(Boolean) && new Set(next).size === workerCount) {
-      setNames(next);
-      saveRecentNames(next);
-      setRotationIndex(prev => (prev % workerCount) + 1);
-    }
-  };
-
-  const rotatePositions = () => {
-    setPositionLabels(prev => rotateArrayRight(normalizePositionLabels(prev, division, workerCount)));
-  };
-
-  const rotateShiftOrder = (shift) => {
-    setShiftOrders(prev => {
-      const current = normalizeShiftOrders(prev, division, workerCount);
-      return { ...current, [shift]: rotateArrayRight(current[shift] || getIdentityShiftOrders(workerCount)[shift]) };
-    });
-  };
-
-  const saveAnnouncement = async () => {
-    await window.firebaseDB?.save(getAnnouncementPath(), { text:String(announcement.text || '').trim(), urgent:!!announcement.urgent, updatedAt:new Date().toISOString() });
-    flashSaved();
-  };
-
-  const clearAnnouncement = async () => {
-    await window.firebaseDB?.save(getAnnouncementPath(), { text:'', urgent:false, updatedAt:new Date().toISOString() });
-    flashSaved();
-  };
-
-  const updateAdvanced = async (targetBand, key, value) => {
-    const next = { ...advancedSettings, [targetBand]: { ...(advancedSettings[targetBand] || ADVANCED_DEFAULTS[targetBand]), [key]: value } };
-    setAdvancedSettings(next);
-    await window.firebaseDB?.save(getAdvancedSettingsPath(), next);
-    flashSaved();
-  };
-
-  const selectedPersonalOutput = activeEmployeeList.find(emp => employeeRealName(emp) === personalName)?.outputName || stripParenName(personalName) || '이름 미설정';
-  const firstWorkingDay = schedule.find(d => d.shift !== '휴' && d.assignment);
-  const todayScheduleRow = schedule.find(d => d.day === today.getDate()) || firstWorkingDay;
-  const firstPositionLabel = displayPositionLabels[0] || '근무지';
-  const firstPositionKey = getPositionKeyByLabel(firstPositionLabel);
-  const todayStartName = todayScheduleRow?.assignment?.[firstPositionKey] || selectedPersonalOutput;
-  const selectStyle = { padding:'7px 10px', background:'#0f172a', border:'1.5px solid #334155', borderRadius:8, color:'#f1f5f9', fontSize:13, fontWeight:800, outline:'none' };
+  const selectStyle = { padding:'8px 12px', background:'#0f172a', border:'1.5px solid #334155', borderRadius:8, color:'#f1f5f9', fontSize:14, fontWeight:800, outline:'none' };
   const buttonBase = { border:'none', borderRadius:8, color:'#fff', fontWeight:900, cursor:'pointer' };
-  const gridCols = `58px 34px ${displayPositionLabels.map(() => '1fr').join(' ')}`;
+  const gridCols = `82px 42px ${displayPositionLabels.map(() => '1fr').join(' ')}`;
 
   return (
-    <div style={{ minHeight:'100vh', background:'linear-gradient(135deg,#0f172a 0%,#1e293b 100%)', fontFamily:"'Segoe UI','Apple SD Gothic Neo',sans-serif", color:'#e2e8f0', padding:'10px 8px' }}>
-      <div style={{ maxWidth:520, margin:'0 auto' }}>
+    <div style={{ minHeight:'100vh', background:'linear-gradient(135deg,#0f172a 0%,#1e293b 100%)', fontFamily:"'Segoe UI','Apple SD Gothic Neo',sans-serif", color:'#e2e8f0', padding:'18px 12px' }}>
+      <div style={{ maxWidth:980, margin:'0 auto' }}>
         <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', gap:10, marginBottom:14 }}>
           <div style={{ display:'flex', alignItems:'center', gap:10 }}>
-            <img src="./icon-192.png" style={{ width:38, height:38, borderRadius:11 }} />
+            <img src="./icon-192.png" style={{ width:42, height:42, borderRadius:11 }} />
             <div>
-              <div style={{ fontSize:20, fontWeight:950, letterSpacing:'-0.5px' }}>Seul Police</div>
-              <div style={{ fontSize:11, color:'#94a3b8', fontWeight:700 }}>{band} {division} 근무자 배치 자동화</div>
+              <div style={{ fontSize:24, fontWeight:950, letterSpacing:'-0.5px' }}>Seul Police</div>
+              <div style={{ fontSize:12, color:'#94a3b8', fontWeight:700 }}>{band} {division} 근무자 배치 자동화</div>
             </div>
           </div>
-          <button onClick={() => setSettingsOpen(true)} style={{ ...buttonBase, width:38, height:38, background:'#111827', border:'1px solid #334155', fontSize:20 }}>⚙️</button>
+          <button onClick={() => setSettingsOpen(true)} style={{ ...buttonBase, width:42, height:42, background:'#111827', border:'1px solid #334155', fontSize:20 }}>⚙️</button>
         </div>
 
         <div style={{ display:'flex', gap:8, flexWrap:'wrap', alignItems:'center', marginBottom:12 }}>
@@ -839,23 +733,10 @@ function App() {
           </div>
           <select value={selectedYear} onChange={e=>setSelectedYear(Number(e.target.value))} style={selectStyle}>{yearOptions.map(y=><option key={y} value={y}>{y}년</option>)}</select>
           <select value={selectedMonth} onChange={e=>setSelectedMonth(Number(e.target.value))} style={selectStyle}>{monthOptions.map(m=><option key={m} value={m}>{m}월</option>)}</select>
-          <button onClick={goToday} style={{ ...buttonBase, padding:'8px 10px', background:'#334155', fontSize:11 }}>오늘</button><span style={{ fontSize:11, color:'#94a3b8', fontWeight:800, padding:'8px 10px', background:'#0f172a', border:'1px solid #334155', borderRadius:8 }}>근무자 {workerCount}명</span>
+          <span style={{ fontSize:12, color:'#94a3b8', fontWeight:800, padding:'8px 10px', background:'#0f172a', border:'1px solid #334155', borderRadius:8 }}>근무자 {workerCount}명</span>
         </div>
 
-        <div style={{ background:'#111827', border:'1px solid #334155', borderRadius:12, padding:'9px 10px', marginBottom:10 }}>
-          <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:8 }}>
-            <div>
-              <div style={{ fontSize:11, color:'#94a3b8', fontWeight:900 }}>오늘 근무</div>
-              <div style={{ fontSize:15, color:'#f8fafc', fontWeight:950 }}>👮 {selectedPersonalOutput}</div>
-              <div style={{ fontSize:11, color:'#cbd5e1', fontWeight:800 }}>{band} / {division} · {todayScheduleRow?.shift || '근무'} · {firstPositionLabel} 시작</div>
-            </div>
-            <div style={{ fontSize:11, color:'#94a3b8', fontWeight:800, textAlign:'right' }}>{selectedYear}.{String(selectedMonth).padStart(2,'0')}<br/>근무자 {workerCount}명</div>
-          </div>
-        </div>
-
-        {String(announcement?.text || '').trim() && <div style={{ background:announcement.urgent?'#450a0a':'#0f172a', border:announcement.urgent?'1px solid #ef4444':'1px solid #334155', borderRadius:10, padding:'7px 0', marginBottom:10, overflow:'hidden' }}>
-          <div className="sp-marquee"><span>{announcement.urgent ? '🚨 긴급공지' : '📢 공지'} · {announcement.text}</span></div>
-        </div>}
+        {noticeText && <div className="notice-marquee"><span>📢 {noticeText}</span></div>}
 
         <div style={{ background:'#111827', border:'1px solid #334155', borderRadius:12, padding:'9px 10px', marginBottom:10 }}>
           <button onClick={() => setWorkSettingOpen(v => !v)} style={{ width:'100%', border:'none', background:'transparent', color:'#f8fafc', fontSize:14, fontWeight:950, cursor:'pointer', display:'flex', alignItems:'center', justifyContent:'space-between', padding:0 }}>
@@ -873,47 +754,40 @@ function App() {
                 <button onClick={() => applyBandEmployees(band)} style={{ ...buttonBase, background:'#334155', padding:'5px 8px', fontSize:10 }}>DB명단 적용</button>
               </div>
               <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(120px,1fr))', gap:6 }}>
-                {inputNames.map((name, idx) => <select key={idx} value={name} onChange={e=>setWorkerNameAt(idx,e.target.value)} style={{ ...selectStyle, padding:'7px 9px', fontSize:11 }}>
+                {inputNames.map((name, idx) => <select key={idx} value={name} onChange={e=>setWorkerNameAt(idx,e.target.value)} style={{ ...selectStyle, padding:'7px 9px', fontSize:12 }}>
                   <option value="">근무자 {idx+1}</option>
                   {getWorkerOptions(idx).map(emp => <option key={emp.id} value={emp.displayName || emp.name}>{emp.displayName || emp.name}</option>)}
                 </select>)}
               </div>
-              <div style={{ display:'flex', gap:6, marginTop:8, flexWrap:'wrap' }}>
-                <button onClick={rotateWorkers} style={{ ...buttonBase, background:'#2563eb', padding:'6px 9px', fontSize:11 }}>↻ 순서 회전 {rotationIndex}/{workerCount}</button>
-                <button onClick={loadRecentNames} disabled={!recentNamesAvailable} style={{ ...buttonBase, background:recentNamesAvailable?'#334155':'#1e293b', color:recentNamesAvailable?'#fff':'#64748b', padding:'6px 9px', fontSize:11 }}>최근 불러오기</button>
-              </div>
             </div>
 
-            <div style={{ background:'#0f172a', border:'1px solid #334155', borderRadius:10, padding:'8px 9px' }}>
+            {activeAdvanced.positionOrder && <div style={{ background:'#0f172a', border:'1px solid #334155', borderRadius:10, padding:'8px 9px' }}>
               <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:8 }}>
-                <div style={{ color:'#f8fafc', fontSize:11, fontWeight:950 }}>근무지 순서</div>
-                <button onClick={rotatePositions} style={{ ...buttonBase, background:'#334155', padding:'4px 8px', fontSize:10 }}>↻ 회전</button>
+                <div style={{ color:'#f8fafc', fontSize:12, fontWeight:950 }}>근무지순서</div>
+                <button onClick={() => setPositionEditMode(v => !v)} style={{ ...buttonBase, background:positionEditMode?'#059669':'#334155', padding:'4px 7px', fontSize:10 }}>{positionEditMode ? '완료' : '수정'}</button>
               </div>
-              <div style={{ fontSize:9, color:'#64748b', margin:'5px 0 7px' }}>자유 드래그 대신 순서 회전으로 꼬임 방지</div>
-              <div style={{ display:'flex', gap:5, overflowX:'auto', paddingBottom:2 }}>
-                {displayPositionLabels.map((label, idx) => <div key={`${label}-${idx}`} style={{ minWidth:52, flex:'0 0 auto', textAlign:'center', padding:'5px 7px', borderRadius:8, background:'#111827', border:'1px solid #334155', fontSize:11, fontWeight:900 }}>
-                  {label}
+              <div style={{ fontSize:9, color:'#64748b', margin:'5px 0 7px' }}>수정 버튼을 눌러야 좌우 드래그 가능</div>
+              <div ref={positionRailRef} onPointerMove={handlePositionMove} onPointerUp={endPositionDrag} onPointerCancel={endPositionDrag} style={{ display:'flex', gap:5, overflowX:'auto', paddingBottom:2 }}>
+                {displayPositionLabels.map((label, idx) => <div key={`${label}-${idx}`} data-pos-card="true" onPointerDown={e=>startPositionDrag(e, idx)} style={{ minWidth:56, flex:'0 0 auto', textAlign:'center', padding:'5px 7px', borderRadius:8, background:draggingPosIndex===idx?'#334155':'#111827', border:positionEditMode?'1px solid #f59e0b':'1px solid #334155', cursor:positionEditMode?'grab':'default', touchAction:'none', userSelect:'none', fontSize:11, fontWeight:900 }}>
+                  <span style={{ marginRight:3, color:positionEditMode?'#fbbf24':'#64748b', fontSize:9 }}>{positionEditMode?'↔':'·'}</span>{label}
                 </div>)}
               </div>
-            </div>
+            </div>}
 
-            {band === 'C반' && <div style={{ background:'#0f172a', border:'1px solid #334155', borderRadius:10, padding:'8px 9px' }}>
+            {activeAdvanced.shiftOrder && <div style={{ background:'#0f172a', border:'1px solid #334155', borderRadius:10, padding:'8px 9px' }}>
               <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:8 }}>
-                <div style={{ color:'#f8fafc', fontSize:11, fontWeight:950 }}>근무별 순서</div>
-                <span style={{ fontSize:9, color:'#64748b' }}>C반 기본 사용</span>
+                <div style={{ color:'#f8fafc', fontSize:12, fontWeight:950 }}>근무별순서</div>
+                <button onClick={() => setCOrderEditMode(v => !v)} style={{ ...buttonBase, background:cOrderEditMode?'#059669':'#334155', padding:'4px 7px', fontSize:10 }}>{cOrderEditMode ? '완료' : '수정'}</button>
               </div>
-              <div style={{ fontSize:9, color:'#64748b', margin:'5px 0 7px' }}>각 근무별 순서를 회전으로만 변경</div>
+              <div style={{ fontSize:9, color:'#64748b', margin:'5px 0 7px' }}>수정 버튼을 눌러야 N/A/D 순서 드래그 가능</div>
               <div style={{ display:'grid', gap:5 }}>
                 {['N','A','D'].map(sh => {
                   const normalizedOrders = normalizeShiftOrders(shiftOrders, division, workerCount);
                   const order = normalizedOrders[sh] || getIdentityShiftOrders(workerCount)[sh];
                   return <div key={sh} style={{ background:'#111827', border:'1px solid #334155', borderRadius:8, padding:6 }}>
-                    <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:5 }}>
-                      <div style={{ fontSize:10, fontWeight:950, color:SHIFT_COLORS[sh]?.bg === '#1a56db' ? '#93c5fd' : sh === 'A' ? '#86efac' : '#fbbf24' }}>{sh} 순서</div>
-                      <button onClick={()=>rotateShiftOrder(sh)} style={{ ...buttonBase, background:'#334155', padding:'3px 7px', fontSize:9 }}>↻ 회전</button>
-                    </div>
-                    <div style={{ display:'flex', gap:5, overflowX:'auto', paddingBottom:2 }}>
-                      {order.map((nameIdx, idx) => <div key={`${sh}-${nameIdx}-${idx}`} style={{ minWidth:46, flex:'0 0 auto', textAlign:'center', padding:'4px 6px', borderRadius:999, background:'#1e293b', border:'1px solid #475569', fontSize:10, fontWeight:950 }}>
+                    <div style={{ fontSize:10, fontWeight:950, marginBottom:5, color:SHIFT_COLORS[sh]?.bg === '#1a56db' ? '#93c5fd' : sh === 'A' ? '#86efac' : '#fbbf24' }}>{sh} 순서</div>
+                    <div onPointerMove={e=>handleShiftOrderMove(e, sh)} onPointerUp={endShiftOrderDrag} onPointerCancel={endShiftOrderDrag} style={{ display:'flex', gap:5, overflowX:'auto', paddingBottom:2 }}>
+                      {order.map((nameIdx, idx) => <div key={`${sh}-${nameIdx}-${idx}`} data-order-card="true" onPointerDown={e=>startShiftOrderDrag(e, sh, idx)} style={{ minWidth:50, flex:'0 0 auto', textAlign:'center', padding:'5px 7px', borderRadius:999, background:draggingOrder?.shift===sh && draggingOrder?.idx===idx?'#334155':'#1e293b', border:cOrderEditMode?'1px solid #f59e0b':'1px solid #475569', cursor:cOrderEditMode?'grab':'default', touchAction:'none', userSelect:'none', fontSize:10, fontWeight:950 }}>
                         {inputNames[nameIdx] || `근무자${nameIdx+1}`}
                       </div>)}
                     </div>
@@ -925,54 +799,73 @@ function App() {
         </div>
 
         <div style={{ background:'#1e293b', border:'1px solid #334155', borderRadius:14, overflow:'hidden' }}>
-          <div style={{ background:'#0f172a', padding:'9px 10px', borderBottom:'1px solid #334155', display:'flex', justifyContent:'space-between', alignItems:'center' }}>
+          <div style={{ background:'#0f172a', padding:'11px 14px', borderBottom:'1px solid #334155', display:'flex', justifyContent:'space-between', alignItems:'center' }}>
             <span style={{ fontWeight:900, fontSize:14 }}>{selectedYear}년 {selectedMonth}월 {band} {division}</span>
             <span style={{ fontSize:11, color:'#94a3b8' }}>🚔 순찰자 · 🔴 주말/공휴일</span>
           </div>
           <div style={{ display:'grid', gridTemplateColumns:gridCols, background:'#0f172a', borderBottom:'1px solid #334155', padding:'0 10px' }}>
-            {['일/요일','근무',...displayPositionLabels].map(h => <div key={h} style={{ padding:'7px 2px', fontSize:11, fontWeight:800, color:'#94a3b8', textAlign:'center' }}>{h}</div>)}
+            {['일/요일','근무',...displayPositionLabels].map(h => <div key={h} style={{ padding:'8px 4px', fontSize:11, fontWeight:800, color:'#94a3b8', textAlign:'center' }}>{h}</div>)}
           </div>
           {schedule.map((day, idx) => {
             const isToday = day.day === todayDay;
             const textColor = day.isRed ? '#ef4444' : '#cbd5e1';
             return <div key={day.day} style={{ display:'grid', gridTemplateColumns:gridCols, borderBottom:idx<schedule.length-1?'1px solid #1e293b':'none', background:isToday?'rgba(245,158,11,.11)':idx%2?'#172032':'transparent', padding:'0 10px', outline:isToday?'2px solid #f59e0b':'none', outlineOffset:-1 }}>
-              <div style={{ padding:'7px 2px', display:'flex', alignItems:'center', gap:4 }}><span style={{ fontWeight:900, color:textColor }}>{day.day}</span><span style={{ color:textColor }}>({day.dow})</span>{day.holiday && <span style={{ color:'#ef4444', fontSize:10 }}>★</span>}</div>
-              <div style={{ padding:'7px 1px', textAlign:'center' }}>{day.shift !== '휴' ? <span style={{ background:SHIFT_COLORS[day.shift].bg, color:'#fff', borderRadius:5, padding:'2px 7px', fontSize:11, fontWeight:900 }}>{day.shift}</span> : <span style={{ fontSize:11, color:'#475569' }}>휴</span>}</div>
+              <div style={{ padding:'9px 4px', display:'flex', alignItems:'center', gap:4 }}><span style={{ fontWeight:900, color:textColor }}>{day.day}</span><span style={{ color:textColor }}>({day.dow})</span>{day.holiday && <span style={{ color:'#ef4444', fontSize:10 }}>★</span>}</div>
+              <div style={{ padding:'9px 2px', textAlign:'center' }}>{day.shift !== '휴' ? <span style={{ background:SHIFT_COLORS[day.shift].bg, color:'#fff', borderRadius:5, padding:'2px 7px', fontSize:11, fontWeight:900 }}>{day.shift}</span> : <span style={{ fontSize:11, color:'#475569' }}>휴</span>}</div>
               {displayPositionLabels.map(label => {
                 const key = getPositionKeyByLabel(label);
                 const patrol = getPatrolInfo(day, label);
-                return <div key={label} style={{ padding:'7px 2px', fontSize:11, fontWeight:patrol?950:700, color:day.assignment?(patrol?'#fde047':'#f1f5f9'):'#334155', textAlign:'center', background:patrol?'rgba(250,204,21,.16)':'transparent', borderRadius:6, boxShadow:patrol?'inset 0 0 0 1px rgba(250,204,21,.45)':'none' }}>{day.assignment ? <>{day.assignment[key]}{patrol && <span style={{ marginLeft:3 }}>{patrol.mark}</span>}</> : ''}</div>;
+                return <div key={label} style={{ padding:'9px 4px', fontSize:12, fontWeight:patrol?950:700, color:day.assignment?(patrol?'#fde047':'#f1f5f9'):'#334155', textAlign:'center', background:patrol?'rgba(250,204,21,.16)':'transparent', borderRadius:6, boxShadow:patrol?'inset 0 0 0 1px rgba(250,204,21,.45)':'none' }}>{day.assignment ? <>{day.assignment[key]}{patrol && <span style={{ marginLeft:3 }}>{patrol.mark}</span>}</> : ''}</div>;
               })}
             </div>;
           })}
         </div>
 
         <div style={{ marginTop:8, fontSize:11, color:'#86efac', textAlign:'center', background:'#052e16', border:'1px solid #14532d', borderRadius:8, padding:'7px 12px' }}>💾 Firebase 자동 저장 · {syncStatus}</div>
-        <div style={{ marginTop:22, paddingTop:18, borderTop:'1px solid #334155', textAlign:'center', color:'#94a3b8', fontWeight:800 }}>Made by Hyungdai<br/><span style={{ color:'#f8fafc', fontSize:20, fontWeight:950 }}>Seul Police</span></div>
+        <div style={{ marginTop:22, paddingTop:18, borderTop:'1px solid #334155', textAlign:'center', color:'#94a3b8', fontWeight:800 }}>Made by Hyungdai<br/><span style={{ color:'#f8fafc', fontSize:20, fontWeight:950 }}>Seul Police</span><br/><span style={{fontSize:10,color:'#64748b'}}>v{APP_VERSION}</span></div>
 
         {settingsOpen && <div style={{ position:'fixed', inset:0, background:'rgba(2,6,23,.78)', zIndex:999, display:'flex', alignItems:'center', justifyContent:'center', padding:14 }}>
-          <div style={{ width:'min(560px,100%)', maxHeight:'92vh', overflow:'auto', background:'#0f172a', border:'1px solid #334155', borderRadius:16, padding:16, boxShadow:'0 20px 80px rgba(0,0,0,.45)' }}>
+          <div style={{ width:'min(520px,100%)', maxHeight:'92dvh', overflow:'auto', background:'#0f172a', border:'1px solid #334155', borderRadius:16, padding:16, boxShadow:'0 20px 80px rgba(0,0,0,.45)' }}>
             <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:12 }}>
               <div style={{ fontSize:20, fontWeight:950 }}>설정</div>
               <button onClick={()=>setSettingsOpen(false)} style={{ ...buttonBase, background:'#334155', width:34, height:34 }}>×</button>
             </div>
-            <div style={{ display:'flex', gap:8, marginBottom:14 }}>
-              <button onClick={()=>setSettingsTab('personal')} style={{ ...buttonBase, background:settingsTab==='personal'?'#2563eb':'#1e293b', padding:'9px 13px' }}>개인설정</button>
-              <button onClick={()=>setSettingsTab('admin')} style={{ ...buttonBase, background:settingsTab==='admin'?'#2563eb':'#1e293b', padding:'9px 13px' }}>관리자설정</button>
-              <button onClick={()=>setSettingsTab('advanced')} style={{ ...buttonBase, background:settingsTab==='advanced'?'#2563eb':'#1e293b', padding:'9px 13px' }}>반별 고급설정</button>
+            <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr 1fr', gap:6, marginBottom:14 }}>
+              <button onClick={()=>setSettingsTab('personal')} style={{ ...buttonBase, background:settingsTab==='personal'?'#2563eb':'#1e293b', padding:'9px 6px', fontSize:12 }}>개인설정</button>
+              <button onClick={()=>setSettingsTab('advanced')} style={{ ...buttonBase, background:settingsTab==='advanced'?'#2563eb':'#1e293b', padding:'9px 6px', fontSize:12 }}>반별 고급설정</button>
+              <button onClick={()=>setSettingsTab('admin')} style={{ ...buttonBase, background:settingsTab==='admin'?'#2563eb':'#1e293b', padding:'9px 6px', fontSize:12 }}>관리자설정</button>
             </div>
 
             {settingsTab === 'personal' && <div style={{ display:'grid', gap:12 }}>
-              <label style={{ fontSize:11, color:'#94a3b8', fontWeight:900 }}>이름</label>
+              <label style={{ fontSize:12, color:'#94a3b8', fontWeight:900 }}>나의 반</label>
+              <select value={personalBand} onChange={e=>{ setPersonalBand(e.target.value); setPersonalName(''); }} style={selectStyle}>{EMPLOYEE_BANDS.map(b=><option key={b}>{b}</option>)}</select>
+              <label style={{ fontSize:12, color:'#94a3b8', fontWeight:900 }}>이름</label>
               <select value={personalName} onChange={e=>setPersonalName(e.target.value)} style={selectStyle}>
                 <option value="">선택 안 함</option>
-                {activeEmployeeList.filter(emp=>emp.band===personalBand).map(emp=><option key={emp.id} value={employeeRealName(emp)}>{employeeRealName(emp)}</option>)}
+                {activeEmployeeList.filter(emp=>emp.band===personalBand).map(emp=><option key={emp.id} value={emp.name}>{emp.name}</option>)}
               </select>
-              <label style={{ fontSize:11, color:'#94a3b8', fontWeight:900 }}>나의 반</label>
-              <select value={personalBand} onChange={e=>setPersonalBand(e.target.value)} style={selectStyle}>{EMPLOYEE_BANDS.map(b=><option key={b}>{b}</option>)}</select>
-              <label style={{ fontSize:11, color:'#94a3b8', fontWeight:900 }}>나의 근무지</label>
+              <label style={{ fontSize:12, color:'#94a3b8', fontWeight:900 }}>나의 근무지</label>
               <select value={personalDivision} onChange={e=>setPersonalDivision(e.target.value)} style={selectStyle}>{['1발전','2발전'].map(d=><option key={d}>{d}</option>)}</select>
-              <button onClick={savePersonalSettings} style={{ ...buttonBase, background:'linear-gradient(135deg,#0ea5e9,#2563eb)', padding:'9px 10px' }}>개인설정 저장</button>
+              <button onClick={savePersonalSettings} style={{ ...buttonBase, background:'linear-gradient(135deg,#0ea5e9,#2563eb)', padding:'11px 14px' }}>개인설정 저장</button>
+            </div>}
+
+            {settingsTab === 'advanced' && <div style={{ display:'grid', gap:12 }}>
+              <div style={{ background:'#111827', border:'1px solid #334155', borderRadius:12, padding:12 }}>
+                <label style={{ fontSize:12, color:'#94a3b8', fontWeight:900 }}>반 선택</label>
+                <select value={advancedBand} onChange={e=>setAdvancedBand(e.target.value)} style={{ ...selectStyle, width:'100%', marginTop:6 }}>{EMPLOYEE_BANDS.map(b=><option key={b}>{b}</option>)}</select>
+              </div>
+              <div style={{ background:'#111827', border:'1px solid #334155', borderRadius:12, padding:12, display:'grid', gap:10 }}>
+                <label style={{ display:'flex', alignItems:'center', justifyContent:'space-between', gap:12, fontWeight:900 }}>
+                  <span>근무지순서 사용</span>
+                  <input type="checkbox" checked={!!getBandAdvanced(advancedBand).positionOrder} onChange={e=>updateBandAdvanced(advancedBand,'positionOrder',e.target.checked)} />
+                </label>
+                <div style={{ color:'#64748b', fontSize:11 }}>켜면 메인 근무지설정에서 근무지 순서를 좌우 이동으로 수정할 수 있어요.</div>
+                <label style={{ display:'flex', alignItems:'center', justifyContent:'space-between', gap:12, fontWeight:900 }}>
+                  <span>근무별순서 사용</span>
+                  <input type="checkbox" checked={!!getBandAdvanced(advancedBand).shiftOrder} onChange={e=>updateBandAdvanced(advancedBand,'shiftOrder',e.target.checked)} />
+                </label>
+                <div style={{ color:'#64748b', fontSize:11 }}>켜면 해당 반에서 N/A/D 근무별 순서 설정이 표시돼요. 기본은 C반만 켜짐.</div>
+              </div>
             </div>}
 
             {settingsTab === 'admin' && <div>
@@ -982,7 +875,7 @@ function App() {
               </div> : <div style={{ display:'grid', gap:14 }}>
                 <div style={{ background:'#111827', border:'1px solid #334155', borderRadius:12, padding:12 }}>
                   <div style={{ fontWeight:950, marginBottom:10 }}>직원 DB 관리</div>
-                  <div style={{ display:'grid', gridTemplateColumns:'1fr 120px 1fr auto', gap:8 }}>
+                  <div style={{ display:'grid', gridTemplateColumns:'1fr', gap:8 }}>
                     <input value={employeeForm.name} onChange={e=>setEmployeeForm(f=>({...f,name:e.target.value}))} placeholder="실명 예: 문태헌" style={selectStyle} />
                     <select value={employeeForm.band} onChange={e=>setEmployeeForm(f=>({...f,band:e.target.value}))} style={selectStyle}>{EMPLOYEE_BANDS.map(b=><option key={b}>{b}</option>)}</select>
                     <input value={employeeForm.outputName} onChange={e=>setEmployeeForm(f=>({...f,outputName:e.target.value}))} placeholder="출력이름 예: 태헌 / 진수A" style={selectStyle} />
@@ -995,45 +888,29 @@ function App() {
                         <button onClick={()=>clearBandEmployees(b)} style={{ border:'none', borderRadius:7, background:'#7f1d1d', color:'#fecaca', padding:'5px 8px', fontSize:11, fontWeight:950, cursor:'pointer' }}>전체삭제</button>
                       </div>
                       <div style={{ display:'flex', gap:6, flexWrap:'wrap' }}>
-                        {employeeList.filter(emp=>emp.band===b && emp.active).map(emp => <span key={emp.id} style={{ display:'inline-flex', alignItems:'center', gap:6, background:'#1e293b', border:'1px solid #334155', borderRadius:999, padding:'6px 9px', fontSize:11, fontWeight:900 }}>
+                        {employeeList.filter(emp=>emp.band===b && emp.active).map(emp => <span key={emp.id} style={{ display:'inline-flex', alignItems:'center', gap:6, background:'#1e293b', border:'1px solid #334155', borderRadius:999, padding:'6px 9px', fontSize:12, fontWeight:900 }}>
                           {getEmployeeDisplayName(emp)}<button onClick={()=>deleteEmployee(emp.id)} style={{ border:'none', background:'#7f1d1d', color:'#fecaca', borderRadius:999, cursor:'pointer', fontWeight:950 }}>×</button>
                         </span>)}
-                        {employeeList.filter(emp=>emp.band===b && emp.active).length===0 && <span style={{ color:'#64748b', fontSize:11 }}>비어있음</span>}
+                        {employeeList.filter(emp=>emp.band===b && emp.active).length===0 && <span style={{ color:'#64748b', fontSize:12 }}>비어있음</span>}
                       </div>
                     </div>)}
                   </div>
                 </div>
                 <div style={{ background:'#111827', border:'1px solid #334155', borderRadius:12, padding:12 }}>
                   <div style={{ fontWeight:950, marginBottom:8 }}>공지사항 관리</div>
-                  <textarea value={announcement.text || ''} onChange={e=>setAnnouncement(a=>({...a,text:e.target.value}))} placeholder="공지사항을 입력하세요" style={{ ...selectStyle, width:'100%', minHeight:72, resize:'vertical' }} />
-                  <label style={{ display:'flex', alignItems:'center', gap:8, marginTop:8, fontSize:11, color:'#cbd5e1', fontWeight:900 }}><input type="checkbox" checked={!!announcement.urgent} onChange={e=>setAnnouncement(a=>({...a,urgent:e.target.checked}))} /> 긴급공지</label>
-                  <div style={{ display:'flex', gap:6, marginTop:8 }}>
-                    <button onClick={saveAnnouncement} style={{ ...buttonBase, background:'#059669', padding:'7px 10px', fontSize:11 }}>공지 저장</button>
-                    <button onClick={clearAnnouncement} style={{ ...buttonBase, background:'#334155', padding:'7px 10px', fontSize:11 }}>공지 삭제</button>
+                  <textarea value={noticeText} onChange={e=>setNoticeText(e.target.value)} placeholder="메인에 표시할 공지사항" style={{ ...selectStyle, width:'100%', minHeight:70, resize:'vertical' }} />
+                  <div style={{ display:'flex', gap:8, marginTop:8 }}>
+                    <button onClick={()=>{localStorage.setItem('sp_notice_text', noticeText); setSavedToast(true); setTimeout(()=>setSavedToast(false),1400);}} style={{ ...buttonBase, background:'#2563eb', padding:'8px 11px' }}>공지 저장</button>
+                    <button onClick={()=>{setNoticeText(''); localStorage.removeItem('sp_notice_text');}} style={{ ...buttonBase, background:'#334155', padding:'8px 11px' }}>공지 삭제</button>
                   </div>
                 </div>
+
                 <div style={{ background:'#111827', border:'1px solid #334155', borderRadius:12, padding:12 }}>
                   <div style={{ fontWeight:950, marginBottom:8 }}>근무자 수 설정</div>
                   <div style={{ display:'flex', gap:6 }}>{[4,5,6].map(n=><button key={n} onClick={()=>handleWorkerCountChange(n)} style={{ ...buttonBase, width:42, height:36, background:workerCount===n?'#2563eb':'#334155' }}>{n}</button>)}</div>
                 </div>
                 <button onClick={()=>setIsAdminMode(false)} style={{ ...buttonBase, background:'#7f1d1d', padding:'10px 12px' }}>관리자모드 종료</button>
               </div>}
-            </div>}
-
-            {settingsTab === 'advanced' && <div style={{ display:'grid', gap:12 }}>
-              <div style={{ background:'#111827', border:'1px solid #334155', borderRadius:12, padding:12 }}>
-                <div style={{ fontWeight:950, marginBottom:10 }}>반별 고급설정</div>
-                <select value={advancedBand} onChange={e=>setAdvancedBand(e.target.value)} style={{ ...selectStyle, width:'100%', marginBottom:10 }}>{EMPLOYEE_BANDS.map(b=><option key={b}>{b}</option>)}</select>
-                <label style={{ display:'flex', justifyContent:'space-between', alignItems:'center', padding:'10px 0', borderBottom:'1px solid #334155', fontSize:13, fontWeight:900 }}>
-                  <span>근무지 순서 사용</span>
-                  <input type="checkbox" checked={!!advancedSettings?.[advancedBand]?.positionOrder} onChange={e=>updateAdvanced(advancedBand, 'positionOrder', e.target.checked)} />
-                </label>
-                <label style={{ display:'flex', justifyContent:'space-between', alignItems:'center', padding:'10px 0', fontSize:13, fontWeight:900 }}>
-                  <span>근무별 순서 사용</span>
-                  <input type="checkbox" checked={!!advancedSettings?.[advancedBand]?.shiftOrder} onChange={e=>updateAdvanced(advancedBand, 'shiftOrder', e.target.checked)} />
-                </label>
-                <div style={{ marginTop:8, fontSize:11, color:'#94a3b8', lineHeight:1.45 }}>근무 순서는 자유 드래그가 아니라 회전 방식만 사용해서 순서 꼬임을 방지합니다.</div>
-              </div>
             </div>}
           </div>
         </div>}
