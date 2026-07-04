@@ -1,5 +1,5 @@
 const { useState, useEffect, useRef, useCallback } = React;
-const APP_VERSION = "5.2.0-sprint1";
+const APP_VERSION = "5.2.0-sprint1-personal-card-fix";
 // ver5.0: 파일 분리(index.html / app.js / firebase.js / styles.css), ver4.9 기능 포함
 
 
@@ -433,6 +433,7 @@ function App() {
   const [personalBand, setPersonalBand] = useState(initBand);
   const [personalDivision, setPersonalDivision] = useState(initDivision);
   const [personalName, setPersonalName] = useState(personal.name || '');
+  const [personalScheduleData, setPersonalScheduleData] = useState(null);
 
   const [adminCodeInput, setAdminCodeInput] = useState('');
   const [isAdminMode, setIsAdminMode] = useState(false);
@@ -475,6 +476,10 @@ function App() {
 
   const employeeList = sortEmployees(Object.entries(employees || {}).map(([id, raw]) => normalizeEmployee(raw, id)));
   const activeEmployeeList = employeeList.filter(emp => emp.active && emp.name);
+  const personalEmployee = activeEmployeeList.find(emp => emp.name === personalName);
+  const personalFixedBand = personalEmployee?.band || personalBand;
+  const personalFixedDivision = personalDivision;
+  const hasPersonalProfile = Boolean(personalName && personalFixedBand && personalFixedDivision);
 
   const getEmployeeDisplayName = (emp) => String(emp.outputName || emp.name || '').trim();
   const cleanLabel = (value) => String(value || '').replace(/\(.*\)/, '').trim();
@@ -500,6 +505,40 @@ function App() {
       window.removeEventListener('offline', updateOnline);
     };
   }, []);
+
+  useEffect(() => {
+    if (!hasPersonalProfile || !window.firebaseDB?.listen) {
+      setPersonalScheduleData(null);
+      return;
+    }
+    let cancelled = false;
+    let unsubscribe = null;
+    const attach = () => {
+      unsubscribe = window.firebaseDB.listen(getMonthlySchedulePath(selectedYear, selectedMonth, personalFixedBand, personalFixedDivision), async (data) => {
+        if (cancelled) return;
+        let sourceData = data;
+        if (!sourceData && window.firebaseDB?.read) {
+          try { sourceData = await window.firebaseDB.read(getLegacySchedulePath(personalFixedBand, personalFixedDivision)); } catch {}
+        }
+        if (!sourceData) {
+          setPersonalScheduleData(null);
+          return;
+        }
+        const normalized = normalizeRemoteData(sourceData, personalFixedBand, personalFixedDivision);
+        setPersonalScheduleData({
+          band: personalFixedBand,
+          division: personalFixedDivision,
+          workerCount: normalized.workerCount,
+          names: normalized.names,
+          shiftOrders: normalized.shiftOrders,
+          positionLabels: normalized.positionLabels,
+          schedule: generateSchedule(normalized.names, selectedYear, selectedMonth, personalFixedDivision, normalized.workerCount, normalized.shiftOrders, personalFixedBand),
+        });
+      });
+    };
+    attach();
+    return () => { cancelled = true; if (typeof unsubscribe === 'function') unsubscribe(); };
+  }, [hasPersonalProfile, personalFixedBand, personalFixedDivision, selectedYear, selectedMonth]);
 
   useEffect(() => {
     let unsubscribe = null;
@@ -877,18 +916,32 @@ function App() {
   };
 
   const todayWorkInfo = (() => {
-    const todayRow = schedule.find(d => d.day === todayDay);
-    const emp = activeEmployeeList.find(e => e.name === personalName);
-    const displayName = emp ? getEmployeeDisplayName(emp) : (personalName || names[0] || '');
+    if (!hasPersonalProfile) return null;
+    const emp = personalEmployee;
+    const displayName = emp ? getEmployeeDisplayName(emp) : personalName;
+    const source = (personalFixedBand === band && personalFixedDivision === division)
+      ? { schedule, positionLabels: displayPositionLabels, workerCount }
+      : personalScheduleData;
+    const todayRow = source?.schedule?.find(d => d.day === todayDay);
+    const labels = source?.positionLabels ? normalizePositionLabels(source.positionLabels, personalFixedDivision, source.workerCount || workerCount) : displayPositionLabels;
     let position = '';
     if (todayRow?.assignment && displayName) {
-      for (const label of displayPositionLabels) {
+      for (const label of labels) {
         const key = getPositionKeyByLabel(label);
         if (todayRow.assignment[key] === displayName) { position = cleanLabel(label); break; }
       }
     }
-    return { displayName, shift:todayRow?.shift || '-', position:position || (todayRow?.shift === '휴' ? '휴무' : '미배정'), day:todayRow };
+    const shift = todayRow?.shift || getShiftForDate(today.getFullYear(), today.getMonth()+1, today.getDate(), personalFixedDivision, personalFixedBand);
+    return {
+      displayName,
+      band: personalFixedBand,
+      division: personalFixedDivision,
+      shift,
+      position: position || (shift === '휴' ? '휴무' : (source ? '미배정' : '데이터 확인중')),
+      day: todayRow,
+    };
   })();
+
 
   const selectStyle = { padding:'8px 12px', background:'#0f172a', border:'1.5px solid #334155', borderRadius:8, color:'#f1f5f9', fontSize:14, fontWeight:800, outline:'none' };
   const buttonBase = { border:'none', borderRadius:8, color:'#fff', fontWeight:900, cursor:'pointer' };
@@ -923,19 +976,19 @@ function App() {
           {hasUnsavedChanges && <span style={{ fontSize:11, color:'#fbbf24', fontWeight:950, padding:'7px 9px', background:'rgba(251,191,36,.12)', border:'1px solid rgba(251,191,36,.35)', borderRadius:999 }}>● 변경됨</span>}
         </div>
 
-        <div style={{ background:'linear-gradient(135deg,#0f172a,#1e293b)', border:'1px solid #334155', borderRadius:14, padding:'11px 12px', marginBottom:10, display:'flex', alignItems:'center', justifyContent:'space-between', gap:10, boxShadow:'0 10px 28px rgba(0,0,0,.18)' }}>
+        {todayWorkInfo && <div style={{ background:'linear-gradient(135deg,#0f172a,#1e293b)', border:'1px solid #334155', borderRadius:14, padding:'11px 12px', marginBottom:10, display:'flex', alignItems:'center', justifyContent:'space-between', gap:10, boxShadow:'0 10px 28px rgba(0,0,0,.18)' }}>
           <div style={{ display:'flex', alignItems:'center', gap:10 }}>
             <div style={{ width:38, height:38, borderRadius:12, background:'#1d4ed8', display:'grid', placeItems:'center', fontSize:20 }}>👮</div>
             <div>
-              <div style={{ fontSize:15, fontWeight:950 }}>{todayWorkInfo.displayName || '이름 미설정'}</div>
-              <div style={{ fontSize:11, color:'#94a3b8', fontWeight:800 }}>오늘 근무 · {band} / {division}</div>
+              <div style={{ fontSize:15, fontWeight:950 }}>{todayWorkInfo.displayName}</div>
+              <div style={{ fontSize:11, color:'#94a3b8', fontWeight:800 }}>오늘 근무 · {todayWorkInfo.band} / {todayWorkInfo.division}</div>
             </div>
           </div>
           <div style={{ textAlign:'right' }}>
             <div style={{ fontSize:15, color:todayWorkInfo.position==='휴무'?'#94a3b8':'#fde047', fontWeight:950 }}>{todayWorkInfo.position}</div>
             <div style={{ fontSize:11, color:'#94a3b8', fontWeight:800 }}>{todayWorkInfo.shift === '휴' ? '휴무' : `${todayWorkInfo.shift}근무`}</div>
           </div>
-        </div>
+        </div>}
 
         {globalNotice.enabled && globalNotice.text && <div style={{ overflow:'hidden', whiteSpace:'nowrap', background:globalNotice.urgent?'linear-gradient(135deg,#7f1d1d,#991b1b)':'linear-gradient(135deg,#0f172a,#1e293b)', border:globalNotice.urgent?'1px solid #ef4444':'1px solid #334155', color:'#f8fafc', borderRadius:10, padding:'8px 0', marginBottom:10, boxShadow:'0 10px 25px rgba(0,0,0,.2)' }}>
           <div className="notice-marquee" style={{ fontSize:13, fontWeight:900 }}>
