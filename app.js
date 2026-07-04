@@ -1,5 +1,5 @@
 const { useState, useEffect, useRef, useCallback } = React;
-const APP_VERSION = "5.0.5";
+const APP_VERSION = "5.1.1";
 // ver5.0: 파일 분리(index.html / app.js / firebase.js / styles.css), ver4.9 기능 포함
 
 
@@ -350,6 +350,7 @@ function normalizeEmployee(raw, id) {
   return {
     id,
     name: String(raw?.name || "").trim(),
+    outputName: String(raw?.outputName || raw?.displayName || raw?.name || "").trim(),
     band: raw?.band || "A반",
     active: raw?.active !== false,
     createdAt: raw?.createdAt || null,
@@ -412,6 +413,7 @@ function App() {
   const [settingsTab, setSettingsTab] = useState('personal');
   const [personalBand, setPersonalBand] = useState(initBand);
   const [personalDivision, setPersonalDivision] = useState(initDivision);
+  const [personalName, setPersonalName] = useState(personal.name || '');
 
   const [adminCodeInput, setAdminCodeInput] = useState('');
   const [isAdminMode, setIsAdminMode] = useState(false);
@@ -422,6 +424,8 @@ function App() {
   const draggingPosRef = useRef(null);
   const positionRailRef = useRef(null);
   const [draggingPosIndex, setDraggingPosIndex] = useState(null);
+  const draggingOrderRef = useRef(null);
+  const [draggingOrder, setDraggingOrder] = useState(null);
 
   const applyingRemoteRef = useRef(false);
   const lastRemoteCoreRef = useRef('');
@@ -433,7 +437,7 @@ function App() {
   const monthOptions = Array.from({ length: 12 }, (_, i) => i + 1);
   const todayDay = today.getFullYear() === selectedYear && today.getMonth()+1 === selectedMonth ? today.getDate() : null;
 
-  const employeeList = sortEmployees(Object.entries(employees || {}).map(([id, raw]) => normalizeEmployee(raw, id)).map(emp => ({ ...emp, outputName: String(employees?.[emp.id]?.outputName || emp.name || '').trim() })));
+  const employeeList = sortEmployees(Object.entries(employees || {}).map(([id, raw]) => normalizeEmployee(raw, id)));
   const activeEmployeeList = employeeList.filter(emp => emp.active && emp.name);
 
   const getEmployeeDisplayName = (emp) => String(emp.outputName || emp.name || '').trim();
@@ -519,7 +523,7 @@ function App() {
   useEffect(() => { applyBandEmployees(band); }, [employees, band, workerCount]);
 
   const savePersonalSettings = () => {
-    localStorage.setItem('sp_personal_settings', JSON.stringify({ band: personalBand, division: personalDivision }));
+    localStorage.setItem('sp_personal_settings', JSON.stringify({ band: personalBand, division: personalDivision, name: personalName }));
     setBand(personalBand);
     setDivision(personalDivision);
     setSettingsOpen(false);
@@ -545,6 +549,12 @@ function App() {
   const deleteEmployee = async (id) => {
     if (!confirm('이 직원을 삭제할까요?')) return;
     await window.firebaseDB?.save(`employees/${id}`, { ...(employees[id] || {}), id, active:false, updatedAt:new Date().toISOString() });
+  };
+
+  const clearBandEmployees = async (targetBand) => {
+    if (!confirm(`${targetBand} 직원DB를 전체 삭제할까요?`)) return;
+    const targets = employeeList.filter(emp => emp.band === targetBand && emp.active);
+    await Promise.all(targets.map(emp => window.firebaseDB?.save(`employees/${emp.id}`, { ...(employees[emp.id] || {}), id:emp.id, active:false, updatedAt:new Date().toISOString() })));
   };
 
   const getWorkerOptions = (slotIdx) => {
@@ -590,7 +600,10 @@ function App() {
       }
       return null;
     }
-    if (band === 'A반' && day.shift === 'N') return l === '기록' ? { mark:'🚔' } : null;
+    if (band === 'A반') {
+      if (day.shift === 'N') return l === '기록' ? { mark:'🚔' } : null;
+      if (day.shift === 'A') return l === (weekend ? '소내' : '입초') ? { mark:'🚔' } : null;
+    }
     if ((band === 'B반' || band === 'D반')) {
       if (day.shift === 'N') return l === '기록' ? { mark:'🚔' } : null;
       if (day.shift === 'A') return l === (weekend ? '소내' : '입초') ? { mark:'🚔' } : null;
@@ -628,6 +641,43 @@ function App() {
       if (e.clientX < r.left + r.width/2) { target = i; break; }
     }
     if (target !== draggingPosRef.current) { movePositionToIndex(draggingPosRef.current, target); draggingPosRef.current = target; }
+  };
+
+  const moveShiftOrderToIndex = (shift, from, to) => {
+    setShiftOrders(prev => {
+      const current = normalizeShiftOrders(prev, division, workerCount);
+      const arr = [...(current[shift] || getIdentityShiftOrders(workerCount)[shift])];
+      const safeTo = Math.max(0, Math.min(arr.length - 1, to));
+      if (from === safeTo) return current;
+      const [picked] = arr.splice(from, 1);
+      arr.splice(safeTo, 0, picked);
+      return { ...current, [shift]: arr };
+    });
+  };
+
+  const startShiftOrderDrag = (e, shift, idx) => {
+    e.preventDefault();
+    draggingOrderRef.current = { shift, idx };
+    setDraggingOrder({ shift, idx });
+    e.currentTarget.setPointerCapture?.(e.pointerId);
+    document.body.style.userSelect = 'none';
+  };
+  const endShiftOrderDrag = () => { draggingOrderRef.current = null; setDraggingOrder(null); document.body.style.userSelect = ''; };
+  const handleShiftOrderMove = (e, shift) => {
+    const drag = draggingOrderRef.current;
+    if (!drag || drag.shift !== shift) return;
+    const rail = e.currentTarget;
+    const items = Array.from(rail.querySelectorAll('[data-order-card="true"]'));
+    let target = items.length - 1;
+    for (let i=0;i<items.length;i++) {
+      const r = items[i].getBoundingClientRect();
+      if (e.clientX < r.left + r.width/2) { target = i; break; }
+    }
+    if (target !== drag.idx) {
+      moveShiftOrderToIndex(shift, drag.idx, target);
+      draggingOrderRef.current = { shift, idx: target };
+      setDraggingOrder({ shift, idx: target });
+    }
   };
 
   const selectStyle = { padding:'8px 12px', background:'#0f172a', border:'1.5px solid #334155', borderRadius:8, color:'#f1f5f9', fontSize:14, fontWeight:800, outline:'none' };
@@ -692,6 +742,27 @@ function App() {
           </div>
         </div>
 
+        {band === 'C반' && <div style={{ background:'#111827', border:'1px solid #334155', borderRadius:14, padding:14, marginBottom:12 }}>
+          <div style={{ marginBottom:10 }}>
+            <div style={{ fontSize:14, fontWeight:900 }}>C반 순서카드</div>
+            <div style={{ fontSize:11, color:'#64748b' }}>N 순서 / A 순서 / D 순서 · 이름 카드를 좌우로 드래그</div>
+          </div>
+          <div style={{ display:'grid', gap:10 }}>
+            {['N','A','D'].map(sh => {
+              const normalizedOrders = normalizeShiftOrders(shiftOrders, division, workerCount);
+              const order = normalizedOrders[sh] || getIdentityShiftOrders(workerCount)[sh];
+              return <div key={sh} style={{ background:'#0f172a', border:'1px solid #334155', borderRadius:10, padding:10 }}>
+                <div style={{ fontSize:12, fontWeight:950, marginBottom:7, color:SHIFT_COLORS[sh]?.bg === '#1a56db' ? '#93c5fd' : sh === 'A' ? '#86efac' : '#fbbf24' }}>{sh} 순서</div>
+                <div onPointerMove={e=>handleShiftOrderMove(e, sh)} onPointerUp={endShiftOrderDrag} onPointerCancel={endShiftOrderDrag} style={{ display:'flex', gap:8, overflowX:'auto', paddingBottom:2 }}>
+                  {order.map((nameIdx, idx) => <div key={`${sh}-${nameIdx}-${idx}`} data-order-card="true" onPointerDown={e=>startShiftOrderDrag(e, sh, idx)} style={{ minWidth:84, flex:'0 0 auto', textAlign:'center', padding:'9px 10px', borderRadius:999, background:draggingOrder?.shift===sh && draggingOrder?.idx===idx?'#334155':'#1e293b', border:'1px solid #475569', cursor:'grab', touchAction:'none', userSelect:'none', fontSize:12, fontWeight:950 }}>
+                    {inputNames[nameIdx] || `근무자${nameIdx+1}`}
+                  </div>)}
+                </div>
+              </div>;
+            })}
+          </div>
+        </div>}
+
         <div style={{ background:'#1e293b', border:'1px solid #334155', borderRadius:14, overflow:'hidden' }}>
           <div style={{ background:'#0f172a', padding:'11px 14px', borderBottom:'1px solid #334155', display:'flex', justifyContent:'space-between', alignItems:'center' }}>
             <span style={{ fontWeight:900, fontSize:14 }}>{selectedYear}년 {selectedMonth}월 {band} {division}</span>
@@ -730,6 +801,11 @@ function App() {
             </div>
 
             {settingsTab === 'personal' && <div style={{ display:'grid', gap:12 }}>
+              <label style={{ fontSize:12, color:'#94a3b8', fontWeight:900 }}>나의 이름</label>
+              <select value={personalName} onChange={e=>setPersonalName(e.target.value)} style={selectStyle}>
+                <option value="">선택 안 함</option>
+                {activeEmployeeList.filter(emp=>emp.band===personalBand).map(emp=><option key={emp.id} value={emp.name}>{emp.name} ({getEmployeeDisplayName(emp)})</option>)}
+              </select>
               <label style={{ fontSize:12, color:'#94a3b8', fontWeight:900 }}>나의 반</label>
               <select value={personalBand} onChange={e=>setPersonalBand(e.target.value)} style={selectStyle}>{EMPLOYEE_BANDS.map(b=><option key={b}>{b}</option>)}</select>
               <label style={{ fontSize:12, color:'#94a3b8', fontWeight:900 }}>나의 근무지</label>
@@ -745,14 +821,17 @@ function App() {
                 <div style={{ background:'#111827', border:'1px solid #334155', borderRadius:12, padding:12 }}>
                   <div style={{ fontWeight:950, marginBottom:10 }}>직원 DB 관리</div>
                   <div style={{ display:'grid', gridTemplateColumns:'1fr 120px 1fr auto', gap:8 }}>
-                    <input value={employeeForm.name} onChange={e=>setEmployeeForm(f=>({...f,name:e.target.value}))} placeholder="이름" style={selectStyle} />
+                    <input value={employeeForm.name} onChange={e=>setEmployeeForm(f=>({...f,name:e.target.value}))} placeholder="실명 예: 문태헌" style={selectStyle} />
                     <select value={employeeForm.band} onChange={e=>setEmployeeForm(f=>({...f,band:e.target.value}))} style={selectStyle}>{EMPLOYEE_BANDS.map(b=><option key={b}>{b}</option>)}</select>
-                    <input value={employeeForm.outputName} onChange={e=>setEmployeeForm(f=>({...f,outputName:e.target.value}))} placeholder="출력이름" style={selectStyle} />
+                    <input value={employeeForm.outputName} onChange={e=>setEmployeeForm(f=>({...f,outputName:e.target.value}))} placeholder="출력이름 예: 태헌 / 진수A" style={selectStyle} />
                     <button onClick={handleEmployeeAdd} style={{ ...buttonBase, background:'#059669', padding:'8px 12px' }}>추가</button>
                   </div>
                   <div style={{ display:'grid', gap:10, marginTop:12 }}>
                     {EMPLOYEE_BANDS.map(b => <div key={b} style={{ background:'#0f172a', border:'1px solid #334155', borderRadius:10, padding:10 }}>
-                      <div style={{ fontSize:13, fontWeight:950, marginBottom:8 }}>{b}</div>
+                      <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', gap:8, marginBottom:8 }}>
+                        <div style={{ fontSize:13, fontWeight:950 }}>{b}</div>
+                        <button onClick={()=>clearBandEmployees(b)} style={{ border:'none', borderRadius:7, background:'#7f1d1d', color:'#fecaca', padding:'5px 8px', fontSize:11, fontWeight:950, cursor:'pointer' }}>전체삭제</button>
+                      </div>
                       <div style={{ display:'flex', gap:6, flexWrap:'wrap' }}>
                         {employeeList.filter(emp=>emp.band===b && emp.active).map(emp => <span key={emp.id} style={{ display:'inline-flex', alignItems:'center', gap:6, background:'#1e293b', border:'1px solid #334155', borderRadius:999, padding:'6px 9px', fontSize:12, fontWeight:900 }}>
                           {getEmployeeDisplayName(emp)}<button onClick={()=>deleteEmployee(emp.id)} style={{ border:'none', background:'#7f1d1d', color:'#fecaca', borderRadius:999, cursor:'pointer', fontWeight:950 }}>×</button>
