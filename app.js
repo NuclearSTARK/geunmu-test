@@ -131,6 +131,19 @@ function getCycleOrder(shiftOrders, count) {
   return arr.slice(0, count);
 }
 
+function rotateOrderRight(order, count) {
+  const base = Array.isArray(order) ? order.map(Number).filter(i => Number.isInteger(i) && i >= 0 && i < count) : [];
+  for (let i = 0; i < count; i++) if (!base.includes(i)) base.push(i);
+  const arr = base.slice(0, count);
+  if (arr.length <= 1) return arr;
+  return [arr[arr.length - 1], ...arr.slice(0, arr.length - 1)];
+}
+
+function getDisplayOrderNames(order, names, count) {
+  const arr = Array.isArray(order) ? order : Array.from({ length: count }, (_, i) => i);
+  return arr.slice(0, count).map((nameIdx) => names[nameIdx] || `근무자${Number(nameIdx) + 1}`);
+}
+
 function countAGroupWorkDaysBefore(targetDate, division) {
   const refDate = new Date(2026, 6, 1); // 2026-07-01 = 보민→홍빈→태헌→규민 기준일
   const step = targetDate >= refDate ? 1 : -1;
@@ -639,7 +652,11 @@ function App() {
     const trimmed = inputNames.slice(0, workerCount).map(v => String(v || '').trim());
     if (trimmed.some(v => !v)) { alert('근무자를 모두 선택해주세요.'); return; }
     if (new Set(trimmed).size !== workerCount) { alert('중복된 근무자가 있어요.'); return; }
+    // 근무자 명단을 저장할 때 기존 순서값이 새 명단과 섞이지 않도록 기본 순서로 초기화합니다.
+    // 이후 "순서 회전"을 누르면 이 저장된 명단 기준으로만 회전합니다.
+    const identity = getIdentityShiftOrders(workerCount);
     setNames(trimmed);
+    setShiftOrders(identity);
     setWorkerNamesDirty(false);
     setSavedToast(true);
     setTimeout(() => setSavedToast(false), 1400);
@@ -663,6 +680,23 @@ function App() {
       setSavedToast(true);
       setTimeout(() => setSavedToast(false), 1100);
       return next;
+    });
+  };
+
+
+  const rotateSavedWorkerOrder = () => {
+    setShiftOrders(prev => {
+      const current = normalizeShiftOrders(prev, division, workerCount);
+      const nextCycle = rotateOrderRight(current.CYCLE, workerCount);
+      // A반은 CYCLE을 사용하고, 다른 반에서도 기본 근무자 순서를 함께 맞추기 위해 N/A/D도 동일 회전합니다.
+      return { ...current, CYCLE: nextCycle, N: nextCycle, A: nextCycle, D: nextCycle };
+    });
+  };
+
+  const rotateShiftOrder = (shift) => {
+    setShiftOrders(prev => {
+      const current = normalizeShiftOrders(prev, division, workerCount);
+      return { ...current, [shift]: rotateOrderRight(current[shift], workerCount) };
     });
   };
 
@@ -840,16 +874,34 @@ function App() {
                 <div style={{ color:'#f8fafc', fontSize:12, fontWeight:950 }}>근무별순서</div>
                 <button onClick={() => setCOrderEditMode(v => !v)} style={{ ...buttonBase, background:cOrderEditMode?'#059669':'#334155', padding:'4px 7px', fontSize:10 }}>{cOrderEditMode ? '완료' : '수정'}</button>
               </div>
-              <div style={{ fontSize:9, color:'#64748b', margin:'5px 0 7px' }}>수정 버튼을 눌러야 N/A/D 순서 드래그 가능</div>
+              <div style={{ fontSize:9, color:'#64748b', margin:'5px 0 7px' }}>수정 버튼을 눌렀을 때만 저장된 근무자 명단 기준으로 순서 회전 가능</div>
               <div style={{ display:'grid', gap:5 }}>
+                {(() => {
+                  const normalizedOrders = normalizeShiftOrders(shiftOrders, division, workerCount);
+                  const cycleOrder = getCycleOrder(normalizedOrders, workerCount);
+                  return <div style={{ background:'#111827', border:'1px solid #334155', borderRadius:8, padding:6 }}>
+                    <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', gap:6, marginBottom:5 }}>
+                      <div style={{ fontSize:10, fontWeight:950, color:'#f8fafc' }}>근무자 순서</div>
+                      <button disabled={!cOrderEditMode} onClick={rotateSavedWorkerOrder} style={{ ...buttonBase, background:cOrderEditMode?'#2563eb':'#334155', opacity:cOrderEditMode?1:.45, padding:'4px 7px', fontSize:10 }}>↻ 순서 회전</button>
+                    </div>
+                    <div style={{ display:'flex', gap:5, overflowX:'auto', paddingBottom:2 }}>
+                      {cycleOrder.map((nameIdx, idx) => <div key={`cycle-${nameIdx}-${idx}`} style={{ minWidth:50, flex:'0 0 auto', textAlign:'center', padding:'5px 7px', borderRadius:999, background:'#1e293b', border:'1px solid #475569', fontSize:10, fontWeight:950 }}>
+                        {names[nameIdx] || inputNames[nameIdx] || `근무자${nameIdx+1}`}
+                      </div>)}
+                    </div>
+                  </div>;
+                })()}
                 {['N','A','D'].map(sh => {
                   const normalizedOrders = normalizeShiftOrders(shiftOrders, division, workerCount);
                   const order = normalizedOrders[sh] || getIdentityShiftOrders(workerCount)[sh];
                   return <div key={sh} style={{ background:'#111827', border:'1px solid #334155', borderRadius:8, padding:6 }}>
-                    <div style={{ fontSize:10, fontWeight:950, marginBottom:5, color:SHIFT_COLORS[sh]?.bg === '#1a56db' ? '#93c5fd' : sh === 'A' ? '#86efac' : '#fbbf24' }}>{sh} 순서</div>
-                    <div onPointerMove={e=>handleShiftOrderMove(e, sh)} onPointerUp={endShiftOrderDrag} onPointerCancel={endShiftOrderDrag} style={{ display:'flex', gap:5, overflowX:'auto', paddingBottom:2 }}>
-                      {order.map((nameIdx, idx) => <div key={`${sh}-${nameIdx}-${idx}`} data-order-card="true" onPointerDown={e=>startShiftOrderDrag(e, sh, idx)} style={{ minWidth:50, flex:'0 0 auto', textAlign:'center', padding:'5px 7px', borderRadius:999, background:draggingOrder?.shift===sh && draggingOrder?.idx===idx?'#334155':'#1e293b', border:cOrderEditMode?'1px solid #f59e0b':'1px solid #475569', cursor:cOrderEditMode?'grab':'default', touchAction:'none', userSelect:'none', fontSize:10, fontWeight:950 }}>
-                        {inputNames[nameIdx] || `근무자${nameIdx+1}`}
+                    <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', gap:6, marginBottom:5 }}>
+                      <div style={{ fontSize:10, fontWeight:950, color:SHIFT_COLORS[sh]?.bg === '#1a56db' ? '#93c5fd' : sh === 'A' ? '#86efac' : '#fbbf24' }}>{sh} 순서</div>
+                      <button disabled={!cOrderEditMode} onClick={()=>rotateShiftOrder(sh)} style={{ ...buttonBase, background:cOrderEditMode?'#2563eb':'#334155', opacity:cOrderEditMode?1:.45, padding:'4px 7px', fontSize:10 }}>↻ 회전</button>
+                    </div>
+                    <div style={{ display:'flex', gap:5, overflowX:'auto', paddingBottom:2 }}>
+                      {order.map((nameIdx, idx) => <div key={`${sh}-${nameIdx}-${idx}`} data-order-card="true" style={{ minWidth:50, flex:'0 0 auto', textAlign:'center', padding:'5px 7px', borderRadius:999, background:'#1e293b', border:'1px solid #475569', fontSize:10, fontWeight:950 }}>
+                        {names[nameIdx] || inputNames[nameIdx] || `근무자${nameIdx+1}`}
                       </div>)}
                     </div>
                   </div>;
