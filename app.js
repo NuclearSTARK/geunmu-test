@@ -1,5 +1,5 @@
 const { useState, useEffect, useRef, useCallback } = React;
-const APP_VERSION = "5.1.1";
+const APP_VERSION = "5.1.2";
 // ver5.0: 파일 분리(index.html / app.js / firebase.js / styles.css), ver4.9 기능 포함
 
 
@@ -421,6 +421,9 @@ function App() {
   const [employeeForm, setEmployeeForm] = useState({ name:'', band:'A반', outputName:'' });
 
   const [positionEditMode, setPositionEditMode] = useState(false);
+  const [positionSectionOpen, setPositionSectionOpen] = useState(false);
+  const [cOrderEditMode, setCOrderEditMode] = useState(false);
+  const [cOrderSectionOpen, setCOrderSectionOpen] = useState(false);
   const draggingPosRef = useRef(null);
   const positionRailRef = useRef(null);
   const [draggingPosIndex, setDraggingPosIndex] = useState(null);
@@ -656,6 +659,7 @@ function App() {
   };
 
   const startShiftOrderDrag = (e, shift, idx) => {
+    if (!cOrderEditMode) return;
     e.preventDefault();
     draggingOrderRef.current = { shift, idx };
     setDraggingOrder({ shift, idx });
@@ -664,6 +668,7 @@ function App() {
   };
   const endShiftOrderDrag = () => { draggingOrderRef.current = null; setDraggingOrder(null); document.body.style.userSelect = ''; };
   const handleShiftOrderMove = (e, shift) => {
+    if (!cOrderEditMode) return;
     const drag = draggingOrderRef.current;
     if (!drag || drag.shift !== shift) return;
     const rail = e.currentTarget;
@@ -726,41 +731,47 @@ function App() {
           </div>
         </div>
 
-        <div style={{ background:'#111827', border:'1px solid #334155', borderRadius:14, padding:14, marginBottom:12 }}>
-          <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:10 }}>
-            <div>
-              <div style={{ fontSize:14, fontWeight:900 }}>근무지 순서</div>
-              <div style={{ fontSize:11, color:'#64748b' }}>수정 버튼을 눌러야 좌우 드래그 가능</div>
+        <div style={{ background:'#111827', border:'1px solid #334155', borderRadius:12, padding:'9px 10px', marginBottom:10 }}>
+          <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:8 }}>
+            <button onClick={() => setPositionSectionOpen(v => !v)} style={{ border:'none', background:'transparent', color:'#f8fafc', fontSize:13, fontWeight:950, cursor:'pointer', display:'flex', alignItems:'center', gap:7, padding:0 }}>
+              <span style={{ color:'#94a3b8', fontSize:13 }}>{positionSectionOpen ? '▾' : '▸'}</span> 근무지순서
+            </button>
+            <button onClick={() => setPositionEditMode(v => !v)} style={{ ...buttonBase, background:positionEditMode?'#059669':'#334155', padding:'5px 9px', fontSize:11 }}>{positionEditMode ? '수정완료' : '수정'}</button>
+          </div>
+          {positionSectionOpen && <>
+            <div style={{ fontSize:10, color:'#64748b', margin:'6px 0 8px' }}>수정 버튼을 눌러야 좌우 드래그 가능</div>
+            <div ref={positionRailRef} onPointerMove={handlePositionMove} onPointerUp={endPositionDrag} onPointerCancel={endPositionDrag} style={{ display:'flex', gap:6, overflowX:'auto', paddingBottom:2 }}>
+              {displayPositionLabels.map((label, idx) => <div key={`${label}-${idx}`} data-pos-card="true" onPointerDown={e=>startPositionDrag(e, idx)} style={{ minWidth:68, flex:'0 0 auto', textAlign:'center', padding:'7px 8px', borderRadius:9, background:draggingPosIndex===idx?'#334155':'#0f172a', border:positionEditMode?'1.5px solid #f59e0b':'1px solid #334155', cursor:positionEditMode?'grab':'default', touchAction:'none', userSelect:'none', fontSize:12, fontWeight:900 }}>
+                <span style={{ marginRight:4, color:positionEditMode?'#fbbf24':'#64748b', fontSize:11 }}>{positionEditMode?'↔':'·'}</span>{label}
+              </div>)}
             </div>
-            <button onClick={() => setPositionEditMode(v => !v)} style={{ ...buttonBase, background:positionEditMode?'#059669':'#334155', padding:'8px 12px', fontSize:12 }}>{positionEditMode ? '수정완료' : '수정'}</button>
-          </div>
-          <div ref={positionRailRef} onPointerMove={handlePositionMove} onPointerUp={endPositionDrag} onPointerCancel={endPositionDrag} style={{ display:'flex', gap:8, overflowX:'auto', paddingBottom:2 }}>
-            {displayPositionLabels.map((label, idx) => <div key={`${label}-${idx}`} data-pos-card="true" onPointerDown={e=>startPositionDrag(e, idx)} style={{ minWidth:92, flex:'0 0 auto', textAlign:'center', padding:'10px 12px', borderRadius:10, background:draggingPosIndex===idx?'#334155':'#0f172a', border:positionEditMode?'1.5px solid #f59e0b':'1px solid #334155', cursor:positionEditMode?'grab':'default', touchAction:'none', userSelect:'none', fontWeight:900 }}>
-              <div style={{ fontSize:12, color:positionEditMode?'#fbbf24':'#64748b' }}>{positionEditMode?'↔':'·'}</div>
-              {label}
-            </div>)}
-          </div>
+          </>}
         </div>
 
-        {band === 'C반' && <div style={{ background:'#111827', border:'1px solid #334155', borderRadius:14, padding:14, marginBottom:12 }}>
-          <div style={{ marginBottom:10 }}>
-            <div style={{ fontSize:14, fontWeight:900 }}>C반 순서카드</div>
-            <div style={{ fontSize:11, color:'#64748b' }}>N 순서 / A 순서 / D 순서 · 이름 카드를 좌우로 드래그</div>
+        {band === 'C반' && <div style={{ background:'#111827', border:'1px solid #334155', borderRadius:12, padding:'9px 10px', marginBottom:10 }}>
+          <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:8 }}>
+            <button onClick={() => setCOrderSectionOpen(v => !v)} style={{ border:'none', background:'transparent', color:'#f8fafc', fontSize:13, fontWeight:950, cursor:'pointer', display:'flex', alignItems:'center', gap:7, padding:0 }}>
+              <span style={{ color:'#94a3b8', fontSize:13 }}>{cOrderSectionOpen ? '▾' : '▸'}</span> C반 근무순서
+            </button>
+            <button onClick={() => setCOrderEditMode(v => !v)} style={{ ...buttonBase, background:cOrderEditMode?'#059669':'#334155', padding:'5px 9px', fontSize:11 }}>{cOrderEditMode ? '수정완료' : '수정'}</button>
           </div>
-          <div style={{ display:'grid', gap:10 }}>
-            {['N','A','D'].map(sh => {
-              const normalizedOrders = normalizeShiftOrders(shiftOrders, division, workerCount);
-              const order = normalizedOrders[sh] || getIdentityShiftOrders(workerCount)[sh];
-              return <div key={sh} style={{ background:'#0f172a', border:'1px solid #334155', borderRadius:10, padding:10 }}>
-                <div style={{ fontSize:12, fontWeight:950, marginBottom:7, color:SHIFT_COLORS[sh]?.bg === '#1a56db' ? '#93c5fd' : sh === 'A' ? '#86efac' : '#fbbf24' }}>{sh} 순서</div>
-                <div onPointerMove={e=>handleShiftOrderMove(e, sh)} onPointerUp={endShiftOrderDrag} onPointerCancel={endShiftOrderDrag} style={{ display:'flex', gap:8, overflowX:'auto', paddingBottom:2 }}>
-                  {order.map((nameIdx, idx) => <div key={`${sh}-${nameIdx}-${idx}`} data-order-card="true" onPointerDown={e=>startShiftOrderDrag(e, sh, idx)} style={{ minWidth:84, flex:'0 0 auto', textAlign:'center', padding:'9px 10px', borderRadius:999, background:draggingOrder?.shift===sh && draggingOrder?.idx===idx?'#334155':'#1e293b', border:'1px solid #475569', cursor:'grab', touchAction:'none', userSelect:'none', fontSize:12, fontWeight:950 }}>
-                    {inputNames[nameIdx] || `근무자${nameIdx+1}`}
-                  </div>)}
-                </div>
-              </div>;
-            })}
-          </div>
+          {cOrderSectionOpen && <>
+            <div style={{ fontSize:10, color:'#64748b', margin:'6px 0 8px' }}>수정 버튼을 눌러야 N/A/D 순서 드래그 가능</div>
+            <div style={{ display:'grid', gap:7 }}>
+              {['N','A','D'].map(sh => {
+                const normalizedOrders = normalizeShiftOrders(shiftOrders, division, workerCount);
+                const order = normalizedOrders[sh] || getIdentityShiftOrders(workerCount)[sh];
+                return <div key={sh} style={{ background:'#0f172a', border:'1px solid #334155', borderRadius:9, padding:8 }}>
+                  <div style={{ fontSize:11, fontWeight:950, marginBottom:6, color:SHIFT_COLORS[sh]?.bg === '#1a56db' ? '#93c5fd' : sh === 'A' ? '#86efac' : '#fbbf24' }}>{sh} 순서</div>
+                  <div onPointerMove={e=>handleShiftOrderMove(e, sh)} onPointerUp={endShiftOrderDrag} onPointerCancel={endShiftOrderDrag} style={{ display:'flex', gap:6, overflowX:'auto', paddingBottom:2 }}>
+                    {order.map((nameIdx, idx) => <div key={`${sh}-${nameIdx}-${idx}`} data-order-card="true" onPointerDown={e=>startShiftOrderDrag(e, sh, idx)} style={{ minWidth:62, flex:'0 0 auto', textAlign:'center', padding:'7px 8px', borderRadius:999, background:draggingOrder?.shift===sh && draggingOrder?.idx===idx?'#334155':'#1e293b', border:cOrderEditMode?'1.5px solid #f59e0b':'1px solid #475569', cursor:cOrderEditMode?'grab':'default', touchAction:'none', userSelect:'none', fontSize:11, fontWeight:950 }}>
+                      {inputNames[nameIdx] || `근무자${nameIdx+1}`}
+                    </div>)}
+                  </div>
+                </div>;
+              })}
+            </div>
+          </>}
         </div>}
 
         <div style={{ background:'#1e293b', border:'1px solid #334155', borderRadius:14, overflow:'hidden' }}>
