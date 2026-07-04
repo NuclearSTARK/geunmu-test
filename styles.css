@@ -9,13 +9,13 @@
 /* Global notice marquee */
 .notice-marquee {
   display: inline-block;
-  min-width: 200%;
+  min-width: 100%;
   padding-left: 100%;
-  animation: spNoticeMarquee 18s linear infinite;
+  animation: spNoticeMarquee 16s linear infinite;
 }
 @keyframes spNoticeMarquee {
   0% { transform: translateX(0); }
-  100% { transform: translateX(-50%); }
+  100% { transform: translateX(-100%); }
 }
 @media (prefers-reduced-motion: reduce) {
   .notice-marquee { animation: none; padding-left: 12px; min-width: auto; }

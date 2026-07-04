@@ -421,6 +421,17 @@ function App() {
   const [employeeForm, setEmployeeForm] = useState({ name:'', band:'A반', outputName:'' });
   const [globalNotice, setGlobalNotice] = useState({ text:'', enabled:false, urgent:false });
   const [noticeForm, setNoticeForm] = useState({ text:'', enabled:false, urgent:false });
+  const defaultAdvancedSettings = {
+    'A반': { positionOrderEnabled:true, shiftOrderEnabled:false },
+    'B반': { positionOrderEnabled:true, shiftOrderEnabled:false },
+    'C반': { positionOrderEnabled:true, shiftOrderEnabled:true },
+    'D반': { positionOrderEnabled:true, shiftOrderEnabled:false },
+  };
+  const [advancedBand, setAdvancedBand] = useState(initBand);
+  const [advancedSettings, setAdvancedSettings] = useState(() => {
+    try { return { ...defaultAdvancedSettings, ...(JSON.parse(localStorage.getItem('sp_advanced_settings') || '{}')) }; } catch { return defaultAdvancedSettings; }
+  });
+  const [workerNamesDirty, setWorkerNamesDirty] = useState(false);
 
   const [positionEditMode, setPositionEditMode] = useState(false);
   const [positionSectionOpen, setPositionSectionOpen] = useState(false);
@@ -449,6 +460,7 @@ function App() {
   const getEmployeeDisplayName = (emp) => String(emp.outputName || emp.name || '').trim();
   const cleanLabel = (value) => String(value || '').replace(/\(.*\)/, '').trim();
   const isWeekendOrHoliday = (day) => day.dow === '토' || day.dow === '일' || day.holiday;
+  const currentAdvanced = advancedSettings[band] || defaultAdvancedSettings[band] || { positionOrderEnabled:true, shiftOrderEnabled:false };
 
   useEffect(() => {
     let unsubscribe = null;
@@ -549,7 +561,6 @@ function App() {
     setNames(nextNames);
   }, [activeEmployeeList, band, workerCount]);
 
-  useEffect(() => { applyBandEmployees(band); }, [employees, band, workerCount]);
 
   const savePersonalSettings = () => {
     localStorage.setItem('sp_personal_settings', JSON.stringify({ band: personalBand, division: personalDivision, name: personalName }));
@@ -621,8 +632,17 @@ function App() {
     const next = [...inputNames];
     next[idx] = value;
     setInputNames(next);
-    const trimmed = next.map(v => String(v || '').trim());
-    if (trimmed.every(Boolean) && new Set(trimmed).size === workerCount) setNames(trimmed);
+    setWorkerNamesDirty(true);
+  };
+
+  const saveWorkerNames = () => {
+    const trimmed = inputNames.slice(0, workerCount).map(v => String(v || '').trim());
+    if (trimmed.some(v => !v)) { alert('근무자를 모두 선택해주세요.'); return; }
+    if (new Set(trimmed).size !== workerCount) { alert('중복된 근무자가 있어요.'); return; }
+    setNames(trimmed);
+    setWorkerNamesDirty(false);
+    setSavedToast(true);
+    setTimeout(() => setSavedToast(false), 1400);
   };
 
   const handleWorkerCountChange = (count) => {
@@ -630,9 +650,20 @@ function App() {
     const nextNames = inputNames.slice(0, count);
     while (nextNames.length < count) nextNames.push('');
     setInputNames(nextNames);
-    if (nextNames.every(Boolean)) setNames(nextNames);
+    setWorkerNamesDirty(true);
+    if (nextNames.every(Boolean) && new Set(nextNames.map(v => String(v).trim())).size === count) setNames(nextNames.map(v => String(v).trim()));
     setShiftOrders(getDefaultShiftOrders(division, count));
     setPositionLabels(getDefaultPositionLabels(division, count));
+  };
+
+  const updateAdvancedSetting = (targetBand, key, value) => {
+    setAdvancedSettings(prev => {
+      const next = { ...prev, [targetBand]: { ...(prev[targetBand] || defaultAdvancedSettings[targetBand]), [key]: value } };
+      localStorage.setItem('sp_advanced_settings', JSON.stringify(next));
+      setSavedToast(true);
+      setTimeout(() => setSavedToast(false), 1100);
+      return next;
+    });
   };
 
   const getPositionKeyByLabel = (label) => positions.find(p => cleanLabel(p) === cleanLabel(label)) || positions[displayPositionLabels.indexOf(label)] || positions[0];
@@ -764,7 +795,6 @@ function App() {
         {globalNotice.enabled && globalNotice.text && <div style={{ overflow:'hidden', whiteSpace:'nowrap', background:globalNotice.urgent?'linear-gradient(135deg,#7f1d1d,#991b1b)':'linear-gradient(135deg,#0f172a,#1e293b)', border:globalNotice.urgent?'1px solid #ef4444':'1px solid #334155', color:'#f8fafc', borderRadius:10, padding:'8px 0', marginBottom:10, boxShadow:'0 10px 25px rgba(0,0,0,.2)' }}>
           <div className="notice-marquee" style={{ fontSize:13, fontWeight:900 }}>
             <span style={{ marginRight:40 }}>{globalNotice.urgent ? '🚨 긴급공지' : '📢 공지'} · {globalNotice.text}</span>
-            <span style={{ marginRight:40 }}>{globalNotice.urgent ? '🚨 긴급공지' : '📢 공지'} · {globalNotice.text}</span>
           </div>
         </div>}
 
@@ -779,8 +809,9 @@ function App() {
               <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', gap:8, marginBottom:8 }}>
                 <div>
                   <div style={{ fontSize:13, fontWeight:900 }}>근무자 선택</div>
-                  <div style={{ fontSize:10, color:'#64748b' }}>{band} 직원 DB만 자동 표시 · 중복 선택 방지</div>
+                  <div style={{ fontSize:10, color:'#64748b' }}>{band} 직원 DB만 표시 · 중복 선택 방지</div>
                 </div>
+                {workerNamesDirty && <span style={{ fontSize:10, fontWeight:950, color:'#fbbf24', background:'rgba(251,191,36,.12)', border:'1px solid rgba(251,191,36,.35)', borderRadius:999, padding:'4px 7px' }}>변경됨</span>}
               </div>
               <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(120px,1fr))', gap:6 }}>
                 {inputNames.map((name, idx) => <select key={idx} value={name} onChange={e=>setWorkerNameAt(idx,e.target.value)} style={{ ...selectStyle, padding:'7px 9px', fontSize:12 }}>
@@ -788,9 +819,10 @@ function App() {
                   {getWorkerOptions(idx).map(emp => <option key={emp.id} value={emp.displayName || emp.name}>{emp.displayName || emp.name}</option>)}
                 </select>)}
               </div>
+              <button onClick={saveWorkerNames} style={{ ...buttonBase, marginTop:8, width:'100%', background:'linear-gradient(135deg,#0ea5e9,#2563eb)', padding:'8px 10px', fontSize:12 }}>근무자 명단 저장</button>
             </div>
 
-            <div style={{ background:'#0f172a', border:'1px solid #334155', borderRadius:10, padding:'8px 9px' }}>
+            {currentAdvanced.positionOrderEnabled && <div style={{ background:'#0f172a', border:'1px solid #334155', borderRadius:10, padding:'8px 9px' }}>
               <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:8 }}>
                 <div style={{ color:'#f8fafc', fontSize:12, fontWeight:950 }}>근무지순서</div>
                 <button onClick={() => setPositionEditMode(v => !v)} style={{ ...buttonBase, background:positionEditMode?'#059669':'#334155', padding:'4px 7px', fontSize:10 }}>{positionEditMode ? '완료' : '수정'}</button>
@@ -801,11 +833,11 @@ function App() {
                   <span style={{ marginRight:3, color:positionEditMode?'#fbbf24':'#64748b', fontSize:9 }}>{positionEditMode?'↔':'·'}</span>{label}
                 </div>)}
               </div>
-            </div>
+            </div>}
 
-            {band === 'C반' && <div style={{ background:'#0f172a', border:'1px solid #334155', borderRadius:10, padding:'8px 9px' }}>
+            {currentAdvanced.shiftOrderEnabled && <div style={{ background:'#0f172a', border:'1px solid #334155', borderRadius:10, padding:'8px 9px' }}>
               <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:8 }}>
-                <div style={{ color:'#f8fafc', fontSize:12, fontWeight:950 }}>C반 근무별순서</div>
+                <div style={{ color:'#f8fafc', fontSize:12, fontWeight:950 }}>근무별순서</div>
                 <button onClick={() => setCOrderEditMode(v => !v)} style={{ ...buttonBase, background:cOrderEditMode?'#059669':'#334155', padding:'4px 7px', fontSize:10 }}>{cOrderEditMode ? '완료' : '수정'}</button>
               </div>
               <div style={{ fontSize:9, color:'#64748b', margin:'5px 0 7px' }}>수정 버튼을 눌러야 N/A/D 순서 드래그 가능</div>
@@ -859,22 +891,41 @@ function App() {
               <div style={{ fontSize:20, fontWeight:950 }}>설정</div>
               <button onClick={()=>setSettingsOpen(false)} style={{ ...buttonBase, background:'#334155', width:34, height:34 }}>×</button>
             </div>
-            <div style={{ display:'flex', gap:8, marginBottom:14 }}>
-              <button onClick={()=>setSettingsTab('personal')} style={{ ...buttonBase, background:settingsTab==='personal'?'#2563eb':'#1e293b', padding:'9px 13px' }}>개인설정</button>
-              <button onClick={()=>setSettingsTab('admin')} style={{ ...buttonBase, background:settingsTab==='admin'?'#2563eb':'#1e293b', padding:'9px 13px' }}>관리자설정</button>
+            <div style={{ display:'flex', gap:8, marginBottom:14, overflowX:'auto', paddingBottom:2 }}>
+              <button onClick={()=>setSettingsTab('personal')} style={{ ...buttonBase, background:settingsTab==='personal'?'#2563eb':'#1e293b', padding:'9px 13px', whiteSpace:'nowrap' }}>개인설정</button>
+              <button onClick={()=>setSettingsTab('advanced')} style={{ ...buttonBase, background:settingsTab==='advanced'?'#2563eb':'#1e293b', padding:'9px 13px', whiteSpace:'nowrap' }}>반별 고급설정</button>
+              <button onClick={()=>setSettingsTab('admin')} style={{ ...buttonBase, background:settingsTab==='admin'?'#2563eb':'#1e293b', padding:'9px 13px', whiteSpace:'nowrap' }}>관리자설정</button>
             </div>
 
             {settingsTab === 'personal' && <div style={{ display:'grid', gap:12 }}>
-              <label style={{ fontSize:12, color:'#94a3b8', fontWeight:900 }}>나의 이름</label>
+              <label style={{ fontSize:12, color:'#94a3b8', fontWeight:900 }}>나의 반</label>
+              <select value={personalBand} onChange={e=>{ setPersonalBand(e.target.value); setPersonalName(''); }} style={selectStyle}>{EMPLOYEE_BANDS.map(b=><option key={b}>{b}</option>)}</select>
+              <label style={{ fontSize:12, color:'#94a3b8', fontWeight:900 }}>이름</label>
               <select value={personalName} onChange={e=>setPersonalName(e.target.value)} style={selectStyle}>
                 <option value="">선택 안 함</option>
-                {activeEmployeeList.filter(emp=>emp.band===personalBand).map(emp=><option key={emp.id} value={emp.name}>{emp.name} ({getEmployeeDisplayName(emp)})</option>)}
+                {activeEmployeeList.filter(emp=>emp.band===personalBand).map(emp=><option key={emp.id} value={emp.name}>{emp.name}</option>)}
               </select>
-              <label style={{ fontSize:12, color:'#94a3b8', fontWeight:900 }}>나의 반</label>
-              <select value={personalBand} onChange={e=>setPersonalBand(e.target.value)} style={selectStyle}>{EMPLOYEE_BANDS.map(b=><option key={b}>{b}</option>)}</select>
               <label style={{ fontSize:12, color:'#94a3b8', fontWeight:900 }}>나의 근무지</label>
               <select value={personalDivision} onChange={e=>setPersonalDivision(e.target.value)} style={selectStyle}>{['1발전','2발전'].map(d=><option key={d}>{d}</option>)}</select>
               <button onClick={savePersonalSettings} style={{ ...buttonBase, background:'linear-gradient(135deg,#0ea5e9,#2563eb)', padding:'11px 14px' }}>개인설정 저장</button>
+            </div>}
+
+            {settingsTab === 'advanced' && <div style={{ display:'grid', gap:12 }}>
+              <div style={{ background:'#111827', border:'1px solid #334155', borderRadius:12, padding:12 }}>
+                <label style={{ fontSize:12, color:'#94a3b8', fontWeight:900 }}>반 선택</label>
+                <select value={advancedBand} onChange={e=>setAdvancedBand(e.target.value)} style={{ ...selectStyle, width:'100%', marginTop:7 }}>{EMPLOYEE_BANDS.map(b=><option key={b}>{b}</option>)}</select>
+                <div style={{ display:'grid', gap:10, marginTop:12 }}>
+                  <label style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:10, background:'#0f172a', border:'1px solid #334155', borderRadius:10, padding:'10px 12px', fontSize:13, fontWeight:950 }}>
+                    <span>근무지순서 사용</span>
+                    <input type="checkbox" checked={Boolean((advancedSettings[advancedBand] || defaultAdvancedSettings[advancedBand])?.positionOrderEnabled)} onChange={e=>updateAdvancedSetting(advancedBand, 'positionOrderEnabled', e.target.checked)} />
+                  </label>
+                  <label style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:10, background:'#0f172a', border:'1px solid #334155', borderRadius:10, padding:'10px 12px', fontSize:13, fontWeight:950 }}>
+                    <span>근무별순서 사용</span>
+                    <input type="checkbox" checked={Boolean((advancedSettings[advancedBand] || defaultAdvancedSettings[advancedBand])?.shiftOrderEnabled)} onChange={e=>updateAdvancedSetting(advancedBand, 'shiftOrderEnabled', e.target.checked)} />
+                  </label>
+                </div>
+                <div style={{ marginTop:10, fontSize:11, color:'#94a3b8', lineHeight:1.5 }}>ON/OFF는 이 기기 설정에 저장됩니다. 현재 선택한 반 화면에서 바로 반영돼요.</div>
+              </div>
             </div>}
 
             {settingsTab === 'admin' && <div>
