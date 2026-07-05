@@ -1,5 +1,5 @@
 const { useState, useEffect, useRef, useCallback } = React;
-const APP_VERSION = "5.2.7-order-count-hardfix";
+const APP_VERSION = "5.2.9-no-order-engine";
 // ver5.0: 파일 분리(index.html / app.js / firebase.js / styles.css), ver4.9 기능 포함
 
 
@@ -144,16 +144,15 @@ function getDisplayOrderNames(order, names, count) {
   return arr.slice(0, count).map((nameIdx) => names[nameIdx] || `근무자${Number(nameIdx) + 1}`);
 }
 
-function countRegularBandWorkDaysBefore(targetDate, division, band) {
-  const refDate = new Date(2026, 6, 1); // 2026-07-01 = 저장된 명단 첫 순서 기준일
+function countAGroupWorkDaysBefore(targetDate, division) {
+  const refDate = new Date(2026, 6, 1); // 2026-07-01 = 보민→홍빈→태헌→규민 기준일
   const step = targetDate >= refDate ? 1 : -1;
   let count = 0;
   for (let d = new Date(refDate); step === 1 ? d < targetDate : d > targetDate; d.setDate(d.getDate() + step)) {
     const y = d.getFullYear();
     const m = d.getMonth() + 1;
     const day = d.getDate();
-    const sh = getShiftForDate(y, m, day, division, band);
-    // 핵심: 휴무일은 순서 회전 카운트에서 제외
+    const sh = getShiftForDate(y, m, day, division, "A반");
     if (sh !== "휴") count += step;
   }
   return count;
@@ -163,19 +162,27 @@ function generateSchedule(names, year, month, division, workerCount, shiftOrders
   if (names.length !== workerCount) return [];
   const positions = POSITIONS_BY_DIV_COUNT[division][workerCount];
   const days = getDaysInMonth(year, month);
+  const base = BASE_DATES[division];
   const wc = workerCount;
-  const normalizedOrders = normalizeShiftOrders(shiftOrders, division, wc);
 
-  // v5.2.7 근무순서 엔진
-  // 대상: A/B/C/D, 1발전/2발전 전체 동일 규칙.
-  // 원칙: N/A/D 근무 종류와 상관없이 휴무가 아닌 근무일만 누적 카운트합니다.
-  // 휴무일은 순서 회전에 절대 포함하지 않습니다.
-  // 회전 방향: 오른쪽 마지막 사람이 앞으로 이동.
-  // 예: 1 2 3 4 → 4 1 2 3 → 3 4 1 2 → 휴 → 2 3 4 1 → 1 2 3 4
-  // 중요: N/A/D별 개별 기준순서가 남아 있어도 월간표 회전 계산은 저장된 CYCLE 기준명단 하나만 사용합니다.
-  // 그래야 두 번째 A/N/D 근무도 전체 근무일 카운트에 맞춰 정상 회전합니다.
-  let workDayCount = 0;
-  const globalBaseOrder = getCycleOrder(normalizedOrders, wc);
+  const refDiff = Math.round((new Date(year, month-1, 1) - base) / 86400000);
+  const bandOffset = BAND_CYCLE_OFFSET[band] ?? 0;
+  const preCount = { A: 0, D: 0, N: 0 };
+  if (refDiff >= 0) {
+    for (let d = 0; d < refDiff; d++) {
+      const s = SHIFT_CYCLE[(((d + bandOffset) % 12) + 12) % 12];
+      if (s !== "휴") preCount[s]++;
+    }
+  } else {
+    for (let d = refDiff; d < 0; d++) {
+      const s = SHIFT_CYCLE[(((d + bandOffset) % 12) + 12) % 12];
+      if (s !== "휴") preCount[s]--;
+    }
+  }
+  const shiftDayCount = { ...preCount };
+  let aBandWorkCount = band === "A반"
+    ? countAGroupWorkDaysBefore(new Date(year, month - 1, 1), division)
+    : 0;
 
   return Array.from({ length: days }, (_, i) => {
     const day = i + 1;
@@ -186,15 +193,52 @@ function generateSchedule(names, year, month, division, workerCount, shiftOrders
 
     if (shift === "휴") return { day, dow, shift, assignment: null, isRed, holiday };
 
+    const rotation = shiftDayCount[shift];
+    shiftDayCount[shift]++;
+
     const assignment = {};
 
-    positions.forEach((pos, posIdx) => {
-      const orderIdx = ((posIdx - workDayCount) % wc + wc) % wc;
-      const nameIndex = globalBaseOrder[orderIdx];
-      assignment[pos] = names[nameIndex];
-    });
+    if (band === "A반") {
+      // ver4.5 A반 전용: 1발전/2발전 모두 N/A/D별 순서 없이 하나의 순환순서만 사용
+      // 기준: 2026년 7월 1일 = 보민 → 홍빈 → 태헌 → 규민
+      const cycleOrder = getCycleOrder(shiftOrders, wc);
+      const rotation = aBandWorkCount;
+      aBandWorkCount++;
+      positions.forEach((pos, posIdx) => {
+        const orderIdx = ((posIdx - rotation) % wc + wc) % wc;
+        assignment[pos] = names[cycleOrder[orderIdx]];
+      });
+    } else if (division === "2발전") {
+      // 2발전: 이미지 검증된 공식 적용 — 건드리지 않음
+      positions.forEach((pos, posIdx) => {
+        let nameIdx;
+        if (shift === "N") {
+          nameIdx = ((DIV2_N_OFFSET - rotation + posIdx) % wc + wc) % wc;
+        } else if (shift === "D") {
+          nameIdx = ((rotation + DIV2_D_OFFSET - posIdx) % wc + wc) % wc;
+        } else { // A
+          if (wc === 4) {
+            const pattern = DIV2_A_PATTERN[((rotation % 4) + 4) % 4];
+            nameIdx = pattern[posIdx];
+          } else {
+            // 5명/6명일 때는 빈칸 방지를 위해 순환 배치 적용
+            nameIdx = ((posIdx + rotation) % wc + wc) % wc;
+          }
+        }
+        assignment[pos] = names[getOrderedNameIndex(shiftOrders, shift, nameIdx, wc)];
+      });
+    } else {
+      // 1발전: 2026년 7월 C반 1발전 기준 패턴으로 전체 1발전 통일
+      // names 순서를 기준으로 왼쪽으로 1칸씩 회전합니다.
+      // 예: names가 [승진, 기훈, 준우, 준형]이면
+      // 7/3 N = 승진,기훈,준우,준형 / 7/4 N = 준형,승진,기훈,준우 / 7/5 N = 준우,준형,승진,기훈
+      const offset = DIV1_SHIFT_OFFSETS[shift] ?? 0;
+      positions.forEach((pos, posIdx) => {
+        const nameIdx = ((offset - rotation + posIdx) % wc + wc) % wc;
+        assignment[pos] = names[getOrderedNameIndex(shiftOrders, shift, nameIdx, wc)];
+      });
+    }
 
-    workDayCount++;
     return { day, dow, shift, assignment, isRed, holiday };
   });
 }
