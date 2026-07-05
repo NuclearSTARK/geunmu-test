@@ -1,5 +1,5 @@
 const { useState, useEffect, useRef, useCallback } = React;
-const APP_VERSION = "5.4.0-manual-date-override";
+const APP_VERSION = "5.4.1-position-text-edit";
 // ver5.0: 파일 분리(index.html / app.js / firebase.js / styles.css), ver4.9 기능 포함
 
 
@@ -1038,6 +1038,15 @@ function App() {
     });
   };
 
+  const setPositionLabelAt = (idx, value) => {
+    setPositionLabels(prev => {
+      const arr = normalizePositionLabels(prev, division, workerCount);
+      arr[idx] = String(value || '').trimStart();
+      setDirtyStatus(true);
+      return [...arr];
+    });
+  };
+
   const startPositionDrag = (e, idx) => {
     if (!positionEditMode) return;
     e.preventDefault();
@@ -1214,13 +1223,23 @@ function App() {
 
             {currentAdvanced.positionOrderEnabled && <div style={{ background:'#0f172a', border:'1px solid #334155', borderRadius:10, padding:'8px 9px' }}>
               <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:8 }}>
-                <div style={{ color:'#f8fafc', fontSize:12, fontWeight:950 }}>근무지순서</div>
+                <div style={{ color:'#f8fafc', fontSize:12, fontWeight:950 }}>근무지순서/명칭</div>
                 <button disabled={!editMode} onClick={() => setPositionEditMode(v => !v)} style={{ ...buttonBase, opacity:editMode?1:.45, background:positionEditMode?'#059669':'#334155', padding:'4px 7px', fontSize:10 }}>{positionEditMode ? '완료' : '수정'}</button>
               </div>
-              <div style={{ fontSize:9, color:'#64748b', margin:'5px 0 7px' }}>수정 버튼을 눌러야 좌우 드래그 가능</div>
-              <div ref={positionRailRef} onPointerMove={handlePositionMove} onPointerUp={endPositionDrag} onPointerCancel={endPositionDrag} style={{ display:'flex', gap:5, overflowX:'auto', paddingBottom:2 }}>
-                {displayPositionLabels.map((label, idx) => <div key={`${label}-${idx}`} data-pos-card="true" onPointerDown={e=>startPositionDrag(e, idx)} style={{ minWidth:56, flex:'0 0 auto', textAlign:'center', padding:'5px 7px', borderRadius:8, background:draggingPosIndex===idx?'#334155':'#111827', border:positionEditMode?'1px solid #f59e0b':'1px solid #334155', cursor:positionEditMode?'grab':'default', touchAction:'none', userSelect:'none', fontSize:11, fontWeight:900 }}>
-                  <span style={{ marginRight:3, color:positionEditMode?'#fbbf24':'#64748b', fontSize:9 }}>{positionEditMode?'↔':'·'}</span>{label}
+              <div style={{ fontSize:9, color:'#64748b', margin:'5px 0 7px' }}>수정 시 텍스트 변경 가능 · 손잡이(↔)로 좌우 이동</div>
+              <div ref={positionRailRef} onPointerMove={handlePositionMove} onPointerUp={endPositionDrag} onPointerCancel={endPositionDrag} style={{ display:'flex', gap:6, overflowX:'auto', paddingBottom:3 }}>
+                {displayPositionLabels.map((label, idx) => <div key={`${idx}-${label}`} data-pos-card="true" style={{ minWidth:88, flex:'0 0 auto', textAlign:'center', padding:'6px 7px', borderRadius:9, background:draggingPosIndex===idx?'#334155':'#111827', border:positionEditMode?'1px solid #f59e0b':'1px solid #334155', touchAction:'none', userSelect:'none', fontSize:11, fontWeight:900 }}>
+                  <div style={{ display:'flex', alignItems:'center', gap:5 }}>
+                    <span onPointerDown={e=>startPositionDrag(e, idx)} style={{ color:positionEditMode?'#fbbf24':'#64748b', fontSize:11, cursor:positionEditMode?'grab':'default', padding:'5px 2px' }}>{positionEditMode?'↔':'·'}</span>
+                    <input
+                      value={label}
+                      disabled={!positionEditMode}
+                      onChange={e=>setPositionLabelAt(idx, e.target.value)}
+                      onBlur={e=>setPositionLabelAt(idx, e.target.value.trim() || getDefaultPositionLabels(division, workerCount)[idx] || `근무지${idx+1}`)}
+                      style={{ width:62, background:positionEditMode?'#0b1220':'transparent', color:'#f8fafc', border:positionEditMode?'1px solid #475569':'1px solid transparent', borderRadius:7, padding:'5px 4px', fontSize:12, fontWeight:950, textAlign:'center', outline:'none' }}
+                    />
+                  </div>
+                  <div style={{ marginTop:3, color:'#64748b', fontSize:9, fontWeight:800 }}>{idx+1}번째</div>
                 </div>)}
               </div>
             </div>}
@@ -1389,51 +1408,6 @@ function App() {
                   <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:8, marginTop:10 }}>
                     <button onClick={saveGlobalNotice} style={{ ...buttonBase, background:'#2563eb', padding:'10px 12px', fontSize:12 }}>공지 저장</button>
                     <button onClick={clearGlobalNotice} style={{ ...buttonBase, background:'#7f1d1d', padding:'10px 12px', fontSize:12 }}>공지 삭제</button>
-                  </div>
-                </div>
-
-                <div style={{ background:'#111827', border:'1px solid #334155', borderRadius:14, padding:12 }}>
-                  <div style={{ fontWeight:950, marginBottom:10 }}>🗓 날짜별 근무자 수동 수정</div>
-                  <div style={{ fontSize:11, color:'#94a3b8', lineHeight:1.45, marginBottom:10 }}>
-                    특정 날짜의 근무자 순서를 직접 지정합니다. 기본값은 “이 날짜부터 새 기준”으로 이후 근무일도 자연스럽게 이어집니다.
-                  </div>
-                  <div style={{ display:'grid', gap:8 }}>
-                    <input type="date" value={manualForm.date} onChange={e=>setManualForm(f=>({...f,date:e.target.value}))} style={{ ...selectStyle, width:'100%', boxSizing:'border-box' }} />
-                    <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:8 }}>
-                      <select value={manualForm.band} onChange={e=>setManualForm(f=>({...f,band:e.target.value,names:['','','','']}))} style={{ ...selectStyle, width:'100%' }}>{EMPLOYEE_BANDS.map(b=><option key={b}>{b}</option>)}</select>
-                      <select value={manualForm.division} onChange={e=>setManualForm(f=>({...f,division:e.target.value}))} style={{ ...selectStyle, width:'100%' }}>{['1발전','2발전'].map(d=><option key={d}>{d}</option>)}</select>
-                    </div>
-                    <div style={{ display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:6 }}>
-                      {[4,5,6].map(n=><button key={n} onClick={()=>setManualForm(f=>{ const next=(f.names||[]).slice(0,n); while(next.length<n) next.push(''); return {...f,workerCount:n,names:next}; })} style={{ ...buttonBase, height:34, background:Number(manualForm.workerCount)===n?'#2563eb':'#334155', fontSize:12 }}>{n}명</button>)}
-                    </div>
-                    <button onClick={fillManualFromCurrentSchedule} style={{ ...buttonBase, background:'#475569', padding:'9px 10px', fontSize:12 }}>현재 자동순서 불러오기</button>
-                    <div style={{ display:'grid', gap:6 }}>
-                      {Array.from({ length:Number(manualForm.workerCount || 4) }, (_, idx) => {
-                        const current = String((manualForm.names || [])[idx] || '');
-                        const used = new Set((manualForm.names || []).map((n, i)=>i===idx?'':String(n||'').trim()).filter(Boolean));
-                        const opts = getManualFormOptions(manualForm.band).filter(emp => !used.has(emp.displayName) || emp.displayName === current);
-                        if (current && !opts.some(emp=>emp.displayName===current)) opts.unshift({ id:'current', displayName:current });
-                        return <div key={idx} style={{ display:'grid', gridTemplateColumns:'42px 1fr', gap:7, alignItems:'center' }}>
-                          <div style={{ fontSize:12, color:'#94a3b8', fontWeight:950 }}>{idx+1}번</div>
-                          <select value={current} onChange={e=>setManualNameAt(idx, e.target.value)} style={{ ...selectStyle, width:'100%' }}>
-                            <option value="">근무자 선택</option>
-                            {opts.map(emp=><option key={`${emp.id}-${emp.displayName}`} value={emp.displayName}>{emp.displayName}</option>)}
-                          </select>
-                        </div>;
-                      })}
-                    </div>
-                    <div style={{ display:'grid', gap:7, background:'#0f172a', border:'1px solid #334155', borderRadius:10, padding:'9px 10px' }}>
-                      <label style={{ display:'flex', gap:8, alignItems:'center', fontSize:12, fontWeight:900, color:'#e2e8f0' }}>
-                        <input type="radio" checked={manualForm.mode==='single'} onChange={()=>setManualForm(f=>({...f,mode:'single'}))} /> 하루만 적용
-                      </label>
-                      <label style={{ display:'flex', gap:8, alignItems:'center', fontSize:12, fontWeight:900, color:'#bfdbfe' }}>
-                        <input type="radio" checked={manualForm.mode!=='single'} onChange={()=>setManualForm(f=>({...f,mode:'basis'}))} /> 이 날짜부터 새로운 기준으로 사용
-                      </label>
-                    </div>
-                    <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:8 }}>
-                      <button onClick={saveManualOverride} style={{ ...buttonBase, background:'#2563eb', padding:'10px 12px', fontSize:12 }}>수동 수정 저장</button>
-                      <button onClick={clearManualOverride} style={{ ...buttonBase, background:'#7f1d1d', padding:'10px 12px', fontSize:12 }}>수동값 삭제</button>
-                    </div>
                   </div>
                 </div>
 
