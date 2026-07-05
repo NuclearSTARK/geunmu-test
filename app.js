@@ -1,5 +1,5 @@
 const { useState, useEffect, useRef, useCallback } = React;
-const APP_VERSION = "5.2.0-sprint1";
+const APP_VERSION = "5.2.1-admin-rule-fix";
 // ver5.0: 파일 분리(index.html / app.js / firebase.js / styles.css), ver4.9 기능 포함
 
 
@@ -181,7 +181,9 @@ function generateSchedule(names, year, month, division, workerCount, shiftOrders
     }
   }
   const shiftDayCount = { ...preCount };
-  let regularBandWorkCount = (division === "1발전" && ["A반","B반","D반"].includes(band))
+  // v5.2.1: ABCD반 1/2발전 모두 같은 근무자 순서 규칙을 사용합니다.
+  // 기준 명단에서 근무일마다 1칸씩 오른쪽 회전하고, 휴무일은 회전 카운트에서 제외합니다.
+  let regularBandWorkCount = EMPLOYEE_BANDS.includes(band)
     ? countRegularBandWorkDaysBefore(new Date(year, month - 1, 1), division, band)
     : 0;
 
@@ -199,11 +201,11 @@ function generateSchedule(names, year, month, division, workerCount, shiftOrders
 
     const assignment = {};
 
-    if (division === "1발전" && ["A반","B반","D반"].includes(band)) {
-      // A/B/D반 1발전 전용 규칙
+    if (EMPLOYEE_BANDS.includes(band)) {
+      // v5.2.1: ABCD반 1/2발전 공통 근무자 순서 규칙
       // 저장된 근무자 명단을 기준으로 근무일마다 1칸씩 오른쪽 회전합니다.
-      // 예: 7/1 민식-형태-홍빈-동수 → 7/2 동수-민식-형태-홍빈
-      // 휴무일은 회전 카운트에서 제외합니다.
+      // 예: 7/1 민식-형태-홍빈-동수 → 7/2 동수-민식-형태-홍빈 → 7/3 홍빈-동수-민식-형태
+      // 핵심: 휴무일은 회전 카운트에서 제외합니다.
       const cycleOrder = getCycleOrder(shiftOrders, wc);
       const rotation = regularBandWorkCount;
       regularBandWorkCount++;
@@ -711,24 +713,46 @@ function App() {
   };
 
   const handleEmployeeAdd = async () => {
-    const name = employeeForm.name.trim();
-    const outputName = (employeeForm.outputName || employeeForm.name).trim();
-    if (!name) { alert('이름을 입력해주세요.'); return; }
+    const name = String(employeeForm.name || '').trim();
+    const outputName = String(employeeForm.outputName || employeeForm.name || '').trim();
+    const empBand = employeeForm.band || 'A반';
+    if (!name) { alert('실명을 입력해주세요.'); return; }
+    if (!window.firebaseDB?.save) { alert('Firebase 연결 후 다시 시도해주세요.'); return; }
+
     const id = makeEmployeeId(employees);
     const now = new Date().toISOString();
-    await window.firebaseDB?.save(`employees/${id}`, { id, name, outputName, band:employeeForm.band, active:true, createdAt:now, updatedAt:now });
-    setEmployeeForm({ name:'', band:employeeForm.band, outputName:'' });
+    const newEmployee = { id, name, outputName, band:empBand, active:true, createdAt:now, updatedAt:now };
+    const nextEmployees = { ...(employees || {}), [id]: newEmployee };
+
+    // 즉시 화면에 반영하고, 전체 employees 객체도 함께 저장해서 부모 리스너가 확실히 갱신되게 합니다.
+    setEmployees(nextEmployees);
+    try {
+      await window.firebaseDB.save('employees', nextEmployees);
+      setEmployeeForm({ name:'', band:empBand, outputName:'' });
+      setSavedToast(true);
+      setTimeout(() => setSavedToast(false), 1200);
+    } catch (err) {
+      console.error('직원 추가 실패:', err);
+      alert('직원 추가 저장에 실패했어요. Firebase 연결을 확인해주세요.');
+    }
   };
 
   const deleteEmployee = async (id) => {
     if (!confirm('이 직원을 삭제할까요?')) return;
-    await window.firebaseDB?.save(`employees/${id}`, { ...(employees[id] || {}), id, active:false, updatedAt:new Date().toISOString() });
+    const nextEmployees = { ...(employees || {}) };
+    nextEmployees[id] = { ...(nextEmployees[id] || {}), id, active:false, updatedAt:new Date().toISOString() };
+    setEmployees(nextEmployees);
+    await window.firebaseDB?.save('employees', nextEmployees);
   };
 
   const clearBandEmployees = async (targetBand) => {
     if (!confirm(`${targetBand} 직원DB를 전체 삭제할까요?`)) return;
-    const targets = employeeList.filter(emp => emp.band === targetBand && emp.active);
-    await Promise.all(targets.map(emp => window.firebaseDB?.save(`employees/${emp.id}`, { ...(employees[emp.id] || {}), id:emp.id, active:false, updatedAt:new Date().toISOString() })));
+    const nextEmployees = { ...(employees || {}) };
+    employeeList.filter(emp => emp.band === targetBand && emp.active).forEach(emp => {
+      nextEmployees[emp.id] = { ...(nextEmployees[emp.id] || {}), id:emp.id, active:false, updatedAt:new Date().toISOString() };
+    });
+    setEmployees(nextEmployees);
+    await window.firebaseDB?.save('employees', nextEmployees);
   };
 
   const saveGlobalNotice = async () => {
