@@ -1,5 +1,5 @@
 const { useState, useEffect, useRef, useCallback } = React;
-const APP_VERSION = "5.4.1-position-text-edit";
+const APP_VERSION = "5.4.2-mobile-position-ui";
 // ver5.0: 파일 분리(index.html / app.js / firebase.js / styles.css), ver4.9 기능 포함
 
 
@@ -1138,8 +1138,8 @@ function App() {
   const gridCols = `82px 42px ${displayPositionLabels.map(() => '1fr').join(' ')}`;
 
   return (
-    <div style={{ minHeight:'100vh', background:'linear-gradient(135deg,#0f172a 0%,#1e293b 100%)', fontFamily:"'Segoe UI','Apple SD Gothic Neo',sans-serif", color:'#e2e8f0', padding:'18px 12px' }}>
-      <div style={{ maxWidth:980, margin:'0 auto' }}>
+    <div style={{ minHeight:'100vh', background:'linear-gradient(135deg,#0f172a 0%,#1e293b 100%)', fontFamily:"'Segoe UI','Apple SD Gothic Neo',sans-serif", color:'#e2e8f0', padding:'12px 10px' }}>
+      <div style={{ maxWidth:430, margin:'0 auto', width:'100%' }}>
         <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', gap:10, marginBottom:14 }}>
           <div style={{ display:'flex', alignItems:'center', gap:10 }}>
             <img src="./icon-192.png" style={{ width:42, height:42, borderRadius:11 }} />
@@ -1203,7 +1203,7 @@ function App() {
             <span style={{ color:'#94a3b8', fontSize:14 }}>{workSettingOpen ? '▾' : '▸'}</span>
           </button>
 
-          {workSettingOpen && <div style={{ marginTop:10, display:'grid', gap:9 }}>
+          {workSettingOpen && <div style={{ marginTop:9, display:'grid', gap:8 }}>
             <div style={{ background:'#0f172a', border:'1px solid #334155', borderRadius:10, padding:10 }}>
               <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', gap:8, marginBottom:8 }}>
                 <div>
@@ -1212,7 +1212,7 @@ function App() {
                 </div>
                 {workerNamesDirty && <span style={{ fontSize:10, fontWeight:950, color:'#fbbf24', background:'rgba(251,191,36,.12)', border:'1px solid rgba(251,191,36,.35)', borderRadius:999, padding:'4px 7px' }}>변경됨</span>}
               </div>
-              <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(120px,1fr))', gap:6 }}>
+              <div style={{ display:'grid', gridTemplateColumns:'repeat(2,minmax(0,1fr))', gap:6 }}>
                 {inputNames.map((name, idx) => <select key={idx} value={name} disabled={!editMode} onChange={e=>setWorkerNameAt(idx,e.target.value)} style={{ ...selectStyle, padding:'7px 9px', fontSize:12 }}>
                   <option value="">근무자 {idx+1}</option>
                   {getWorkerOptions(idx).map(emp => <option key={emp.id} value={emp.displayName || emp.name}>{emp.displayName || emp.name}</option>)}
@@ -1221,22 +1221,22 @@ function App() {
               <button disabled={!editMode} onClick={saveWorkerNames} style={{ ...buttonBase, opacity:editMode?1:.45, marginTop:8, width:'100%', background:'linear-gradient(135deg,#0ea5e9,#2563eb)', padding:'8px 10px', fontSize:12 }}>근무자 명단 저장</button>
             </div>
 
-            {currentAdvanced.positionOrderEnabled && <div style={{ background:'#0f172a', border:'1px solid #334155', borderRadius:10, padding:'8px 9px' }}>
+            {currentAdvanced.positionOrderEnabled && <div style={{ background:'#0f172a', border:'1px solid #334155', borderRadius:10, padding:'8px 8px', overflow:'hidden' }}>
               <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:8 }}>
                 <div style={{ color:'#f8fafc', fontSize:12, fontWeight:950 }}>근무지순서/명칭</div>
                 <button disabled={!editMode} onClick={() => setPositionEditMode(v => !v)} style={{ ...buttonBase, opacity:editMode?1:.45, background:positionEditMode?'#059669':'#334155', padding:'4px 7px', fontSize:10 }}>{positionEditMode ? '완료' : '수정'}</button>
               </div>
-              <div style={{ fontSize:9, color:'#64748b', margin:'5px 0 7px' }}>수정 시 텍스트 변경 가능 · 손잡이(↔)로 좌우 이동</div>
-              <div ref={positionRailRef} onPointerMove={handlePositionMove} onPointerUp={endPositionDrag} onPointerCancel={endPositionDrag} style={{ display:'flex', gap:6, overflowX:'auto', paddingBottom:3 }}>
-                {displayPositionLabels.map((label, idx) => <div key={`${idx}-${label}`} data-pos-card="true" style={{ minWidth:88, flex:'0 0 auto', textAlign:'center', padding:'6px 7px', borderRadius:9, background:draggingPosIndex===idx?'#334155':'#111827', border:positionEditMode?'1px solid #f59e0b':'1px solid #334155', touchAction:'none', userSelect:'none', fontSize:11, fontWeight:900 }}>
-                  <div style={{ display:'flex', alignItems:'center', gap:5 }}>
+              <div style={{ fontSize:9, color:'#64748b', margin:'5px 0 7px', lineHeight:1.35 }}>수정 시 텍스트 변경 가능 · ↔ 손잡이로 좌우 이동</div>
+              <div ref={positionRailRef} onPointerMove={handlePositionMove} onPointerUp={endPositionDrag} onPointerCancel={endPositionDrag} style={{ display:'flex', flexWrap:'wrap', gap:6, overflowX:'visible', paddingBottom:0 }}>
+                {displayPositionLabels.map((label, idx) => <div key={`${idx}-${label}`} data-pos-card="true" style={{ minWidth:0, flex:'1 1 calc(50% - 3px)', maxWidth:'calc(50% - 3px)', textAlign:'center', padding:'7px 7px', borderRadius:9, background:draggingPosIndex===idx?'#334155':'#111827', border:positionEditMode?'1px solid #f59e0b':'1px solid #334155', touchAction:'none', userSelect:'none', fontSize:11, fontWeight:900 }}>
+                  <div style={{ display:'grid', gridTemplateColumns:'22px 1fr', alignItems:'center', gap:5 }}>
                     <span onPointerDown={e=>startPositionDrag(e, idx)} style={{ color:positionEditMode?'#fbbf24':'#64748b', fontSize:11, cursor:positionEditMode?'grab':'default', padding:'5px 2px' }}>{positionEditMode?'↔':'·'}</span>
                     <input
                       value={label}
                       disabled={!positionEditMode}
                       onChange={e=>setPositionLabelAt(idx, e.target.value)}
                       onBlur={e=>setPositionLabelAt(idx, e.target.value.trim() || getDefaultPositionLabels(division, workerCount)[idx] || `근무지${idx+1}`)}
-                      style={{ width:62, background:positionEditMode?'#0b1220':'transparent', color:'#f8fafc', border:positionEditMode?'1px solid #475569':'1px solid transparent', borderRadius:7, padding:'5px 4px', fontSize:12, fontWeight:950, textAlign:'center', outline:'none' }}
+                      style={{ width:'100%', minWidth:0, background:positionEditMode?'#0b1220':'transparent', color:'#f8fafc', border:positionEditMode?'1px solid #475569':'1px solid transparent', borderRadius:7, padding:'6px 4px', fontSize:13, fontWeight:950, textAlign:'center', outline:'none' }}
                     />
                   </div>
                   <div style={{ marginTop:3, color:'#64748b', fontSize:9, fontWeight:800 }}>{idx+1}번째</div>
