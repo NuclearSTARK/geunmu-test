@@ -1,5 +1,5 @@
 const { useState, useEffect, useRef, useCallback } = React;
-const APP_VERSION = "5.2.6-order-engine-fix";
+const APP_VERSION = "5.2.7-order-count-hardfix";
 // ver5.0: 파일 분리(index.html / app.js / firebase.js / styles.css), ver4.9 기능 포함
 
 
@@ -166,13 +166,16 @@ function generateSchedule(names, year, month, division, workerCount, shiftOrders
   const wc = workerCount;
   const normalizedOrders = normalizeShiftOrders(shiftOrders, division, wc);
 
-  // v5.2.6 근무순서 엔진
-  // 대상: A/B/D 1발전 우선 보정. 기존 C반/2발전 로직은 건드리지 않음.
-  // 원칙: 근무 종류(A/D/N)는 회전 카운트에 영향을 주지 않고, 근무일만 카운트합니다.
-  // 휴무는 카운트하지 않습니다.
+  // v5.2.7 근무순서 엔진
+  // 대상: A/B/C/D, 1발전/2발전 전체 동일 규칙.
+  // 원칙: N/A/D 근무 종류와 상관없이 휴무가 아닌 근무일만 누적 카운트합니다.
+  // 휴무일은 순서 회전에 절대 포함하지 않습니다.
   // 회전 방향: 오른쪽 마지막 사람이 앞으로 이동.
   // 예: 1 2 3 4 → 4 1 2 3 → 3 4 1 2 → 휴 → 2 3 4 1 → 1 2 3 4
+  // 중요: N/A/D별 개별 기준순서가 남아 있어도 월간표 회전 계산은 저장된 CYCLE 기준명단 하나만 사용합니다.
+  // 그래야 두 번째 A/N/D 근무도 전체 근무일 카운트에 맞춰 정상 회전합니다.
   let workDayCount = 0;
+  const globalBaseOrder = getCycleOrder(normalizedOrders, wc);
 
   return Array.from({ length: days }, (_, i) => {
     const day = i + 1;
@@ -184,13 +187,10 @@ function generateSchedule(names, year, month, division, workerCount, shiftOrders
     if (shift === "휴") return { day, dow, shift, assignment: null, isRed, holiday };
 
     const assignment = {};
-    const baseOrder = Array.isArray(normalizedOrders?.[shift])
-      ? normalizedOrders[shift]
-      : getCycleOrder(normalizedOrders, wc);
 
     positions.forEach((pos, posIdx) => {
       const orderIdx = ((posIdx - workDayCount) % wc + wc) % wc;
-      const nameIndex = baseOrder[orderIdx];
+      const nameIndex = globalBaseOrder[orderIdx];
       assignment[pos] = names[nameIndex];
     });
 
