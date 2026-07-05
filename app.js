@@ -1,5 +1,5 @@
 const { useState, useEffect, useRef, useCallback } = React;
-const APP_VERSION = "5.2.4-order-db-sync-fix";
+const APP_VERSION = "5.2.5-sync-weather-order-fix";
 // ver5.0: 파일 분리(index.html / app.js / firebase.js / styles.css), ver4.9 기능 포함
 
 
@@ -159,7 +159,7 @@ function countRegularBandWorkDaysBefore(targetDate, division, band) {
   return count;
 }
 
-function generateSchedule(names, year, month, division, workerCount, shiftOrders, band = "C반") {
+function generateSchedule(names, year, month, division, workerCount, shiftOrders, band = "C반", useShiftSpecificOrder = false) {
   if (names.length !== workerCount) return [];
   const positions = POSITIONS_BY_DIV_COUNT[division][workerCount];
   const days = getDaysInMonth(year, month);
@@ -183,11 +183,14 @@ function generateSchedule(names, year, month, division, workerCount, shiftOrders
     if (shift === "휴") return { day, dow, shift, assignment: null, isRed, holiday };
 
     const assignment = {};
-    const baseOrder = Array.isArray(normalizedOrders?.[shift])
+    // 기본 배치는 근무 종류(A/D/N)에 흔들리지 않는 공통 기준순서(CYCLE)를 사용합니다.
+    // 반별 고급설정에서 "근무별순서 사용"을 켠 경우에만 N/A/D 개별 기준순서를 사용합니다.
+    const baseOrder = useShiftSpecificOrder && Array.isArray(normalizedOrders?.[shift])
       ? normalizedOrders[shift]
       : getCycleOrder(normalizedOrders, wc);
 
     positions.forEach((pos, posIdx) => {
+      // 원하는 방향: 1 2 3 4 → 4 1 2 3 → 3 4 1 2 → 휴 → 2 3 4 1
       const orderIdx = ((posIdx - workDayCount) % wc + wc) % wc;
       const nameIndex = baseOrder[orderIdx];
       assignment[pos] = names[nameIndex];
@@ -404,6 +407,7 @@ function App() {
   const [undoVisible, setUndoVisible] = useState(false);
   const undoTimerRef = useRef(null);
   const [profileRemoteData, setProfileRemoteData] = useState(null);
+  const [weatherInfo, setWeatherInfo] = useState({ loading:true, text:'부산 날씨 불러오는 중', detail:'' });
 
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsTab, setSettingsTab] = useState('personal');
@@ -515,11 +519,50 @@ function App() {
   }, []);
 
   useEffect(() => {
+    let unsubscribe = null;
+    let cancelled = false;
+    const attach = () => {
+      if (cancelled) return;
+      if (!window.firebaseDB) { setTimeout(attach, 200); return; }
+      unsubscribe = window.firebaseDB.listen('settings/advancedSettings', data => {
+        if (cancelled || !data) return;
+        const next = { ...defaultAdvancedSettings, ...data };
+        setAdvancedSettings(next);
+        try { localStorage.setItem('sp_advanced_settings', JSON.stringify(next)); } catch {}
+      });
+    };
+    attach();
+    return () => { cancelled = true; if (typeof unsubscribe === 'function') unsubscribe(); };
+  }, []);
+
+  useEffect(() => {
     const on = () => setIsOnline(true);
     const off = () => setIsOnline(false);
     window.addEventListener('online', on);
     window.addEventListener('offline', off);
     return () => { window.removeEventListener('online', on); window.removeEventListener('offline', off); };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function loadWeather() {
+      try {
+        // 부산 기준. API key 없는 무료 Open-Meteo 사용.
+        const url = 'https://api.open-meteo.com/v1/forecast?latitude=35.1796&longitude=129.0756&current=temperature_2m,precipitation,weather_code&hourly=precipitation_probability&timezone=Asia%2FSeoul&forecast_days=1';
+        const res = await fetch(url, { cache:'no-store' });
+        const data = await res.json();
+        if (cancelled) return;
+        const temp = Math.round(data?.current?.temperature_2m ?? 0);
+        const rain = data?.hourly?.precipitation_probability?.[0];
+        const code = Number(data?.current?.weather_code ?? 0);
+        const icon = code >= 95 ? '⛈️' : code >= 61 ? '🌧️' : code >= 45 ? '🌫️' : code >= 2 ? '⛅' : '☀️';
+        setWeatherInfo({ loading:false, text:`${icon} 부산 ${temp}℃`, detail: Number.isFinite(Number(rain)) ? `강수 ${rain}%` : '' });
+      } catch (e) {
+        if (!cancelled) setWeatherInfo({ loading:false, text:'🌤️ 부산 날씨', detail:'불러오기 실패' });
+      }
+    }
+    loadWeather();
+    return () => { cancelled = true; };
   }, []);
 
   const personalProfile = getEmployeeProfileByName(personalName, employees);
@@ -578,7 +621,8 @@ function App() {
         setNames(normalized.names);
         setShiftOrders(normalized.shiftOrders);
         setPositionLabels(normalized.positionLabels);
-        setSchedule(generateSchedule(normalized.names, selectedYear, selectedMonth, division, normalized.workerCount, normalized.shiftOrders, band));
+        const useShiftSpecific = Boolean((advancedSettings[band] || defaultAdvancedSettings[band] || {}).shiftOrderEnabled);
+        setSchedule(generateSchedule(normalized.names, selectedYear, selectedMonth, division, normalized.workerCount, normalized.shiftOrders, band, useShiftSpecific));
         setIsLoaded(true);
         setTimeout(() => { applyingRemoteRef.current = false; }, 80);
       });
@@ -588,8 +632,9 @@ function App() {
   }, [band, division, selectedYear, selectedMonth]);
 
   useEffect(() => {
-    setSchedule(generateSchedule(names, selectedYear, selectedMonth, division, workerCount, shiftOrders, band));
-  }, [names, selectedYear, selectedMonth, division, workerCount, shiftOrders, band]);
+    const useShiftSpecific = Boolean((advancedSettings[band] || defaultAdvancedSettings[band] || {}).shiftOrderEnabled);
+    setSchedule(generateSchedule(names, selectedYear, selectedMonth, division, workerCount, shiftOrders, band, useShiftSpecific));
+  }, [names, selectedYear, selectedMonth, division, workerCount, shiftOrders, band, advancedSettings]);
 
   const makeCurrentCore = useCallback(() => makeSavableCore({ band, division, workerCount, names, shiftOrders, positionLabels }), [band, division, workerCount, names, shiftOrders, positionLabels]);
 
@@ -619,7 +664,8 @@ function App() {
     setInputNames(snapshot.names);
     setShiftOrders(snapshot.shiftOrders);
     setPositionLabels(snapshot.positionLabels);
-    setSchedule(generateSchedule(snapshot.names, selectedYear, selectedMonth, snapshot.division, snapshot.workerCount, snapshot.shiftOrders, snapshot.band));
+    const useShiftSpecific = Boolean((advancedSettings[snapshot.band] || defaultAdvancedSettings[snapshot.band] || {}).shiftOrderEnabled);
+    setSchedule(generateSchedule(snapshot.names, selectedYear, selectedMonth, snapshot.division, snapshot.workerCount, snapshot.shiftOrders, snapshot.band, useShiftSpecific));
     setTimeout(() => { applyingRemoteRef.current = false; }, 80);
     saveSetting({ ...snapshot, year:selectedYear, month:selectedMonth })?.then(() => {
       const t = formatSavedTime();
@@ -794,6 +840,7 @@ function App() {
     setAdvancedSettings(prev => {
       const next = { ...prev, [targetBand]: { ...(prev[targetBand] || defaultAdvancedSettings[targetBand]), [key]: value } };
       localStorage.setItem('sp_advanced_settings', JSON.stringify(next));
+      try { window.firebaseDB?.save?.('settings/advancedSettings', next); } catch {}
       setSavedToast(true);
       setTimeout(() => setSavedToast(false), 1100);
       return next;
@@ -929,7 +976,8 @@ function App() {
     const ty = today.getFullYear();
     const tm = today.getMonth() + 1;
     const td = today.getDate();
-    const sc = generateSchedule(profileRemoteData.names, ty, tm, profileDivision, profileRemoteData.workerCount, profileRemoteData.shiftOrders, profileBand);
+    const profileShiftOrderEnabled = Boolean((advancedSettings[profileBand] || defaultAdvancedSettings[profileBand] || {}).shiftOrderEnabled);
+    const sc = generateSchedule(profileRemoteData.names, ty, tm, profileDivision, profileRemoteData.workerCount, profileRemoteData.shiftOrders, profileBand, profileShiftOrderEnabled);
     const row = sc.find(d => d.day === td);
     if (!row || row.shift === '휴') return { name: profileDisplayName || personalName, band: profileBand, division: profileDivision, shift: '휴', position: '휴무', status: '휴무', note: '오늘은 휴무입니다.' };
     const targetName = profileDisplayName || personalName;
@@ -965,8 +1013,10 @@ function App() {
             <span style={{ fontSize:11, fontWeight:900, color:isOnline?'#86efac':'#fca5a5', background:isOnline?'#052e16':'#450a0a', border:`1px solid ${isOnline?'#14532d':'#7f1d1d'}`, borderRadius:999, padding:'5px 8px' }}>{isOnline ? '🟢 온라인' : '🔴 오프라인'}</span>
             {dirtyStatus && <span style={{ fontSize:11, fontWeight:950, color:'#fbbf24', background:'rgba(251,191,36,.12)', border:'1px solid rgba(251,191,36,.35)', borderRadius:999, padding:'5px 8px' }}>● 변경됨</span>}
             {lastSavedAt && <span style={{ fontSize:11, fontWeight:850, color:'#94a3b8', background:'#0f172a', border:'1px solid #334155', borderRadius:999, padding:'5px 8px' }}>마지막 저장 {lastSavedAt}</span>}
+            <span style={{ fontSize:11, fontWeight:900, color:'#bfdbfe', background:'#0f172a', border:'1px solid #334155', borderRadius:999, padding:'5px 8px' }}>{weatherInfo.text}{weatherInfo.detail ? ` · ${weatherInfo.detail}` : ''}</span>
           </div>
           <div style={{ display:'flex', gap:6 }}>
+            <button onClick={forceFirebaseReload} style={{ ...buttonBase, background:'#0f766e', padding:'7px 10px', fontSize:12 }}>🔄 동기화</button>
             <button onClick={() => { const now = new Date(); setSelectedYear(now.getFullYear()); setSelectedMonth(now.getMonth()+1); }} style={{ ...buttonBase, background:'#334155', padding:'7px 10px', fontSize:12 }}>📅 오늘</button>
             <button onClick={() => setEditMode(v=>!v)} style={{ ...buttonBase, background:editMode?'#059669':'#1d4ed8', padding:'7px 10px', fontSize:12 }}>{editMode ? '✔ 저장' : '✏️ 편집'}</button>
           </div>
