@@ -1,5 +1,5 @@
 const { useState, useEffect, useRef, useCallback } = React;
-const APP_VERSION = "5.2.2-admin-default-rule-hardfix";
+const APP_VERSION = "5.2.3-order-firebase-fix";
 // ver5.0: 파일 분리(index.html / app.js / firebase.js / styles.css), ver4.9 기능 포함
 
 
@@ -181,11 +181,10 @@ function generateSchedule(names, year, month, division, workerCount, shiftOrders
     }
   }
   const shiftDayCount = { ...preCount };
-  // v5.2.1: ABCD반 1/2발전 모두 같은 근무자 순서 규칙을 사용합니다.
-  // 기준 명단에서 근무일마다 1칸씩 오른쪽 회전하고, 휴무일은 회전 카운트에서 제외합니다.
-  let regularBandWorkCount = ['A반','B반','C반','D반'].includes(band)
-    ? countRegularBandWorkDaysBefore(new Date(year, month - 1, 1), division, band)
-    : 0;
+  // v5.2.3: ABCD반 1/2발전 공통 근무자 순서 규칙.
+  // 해당 월의 첫 근무일은 저장된 기준 순서 그대로 시작하고,
+  // 이후 근무일마다 맨 뒤 사람이 맨 앞으로 이동합니다. 휴무일은 카운트하지 않습니다.
+  let regularBandWorkCount = 0;
 
   return Array.from({ length: days }, (_, i) => {
     const day = i + 1;
@@ -202,10 +201,9 @@ function generateSchedule(names, year, month, division, workerCount, shiftOrders
     const assignment = {};
 
     if (['A반','B반','C반','D반'].includes(band)) {
-      // v5.2.2: ABCD반 1/2발전 공통 근무자 순서 규칙
-      // 저장된 근무자 명단을 기준으로 근무일마다 1칸씩 오른쪽 회전합니다.
-      // 예: 7/1 민식-형태-홍빈-동수 → 7/2 동수-민식-형태-홍빈 → 7/3 홍빈-동수-민식-형태
-      // 핵심: 휴무일은 회전 카운트에서 제외합니다.
+      // v5.2.3: ABCD반 1발전/2발전 동일 규칙
+      // 예: 7/1 1-2-3-4 → 7/2 4-1-2-3 → 7/3 3-4-1-2 → 휴무 건너뜀 → 7/5 2-3-4-1
+      // 기준 순서는 근무지설정 > 근무별순서에서 수정/저장합니다.
       const cycleOrder = getCycleOrder(shiftOrders, wc);
       const rotation = regularBandWorkCount;
       regularBandWorkCount++;
@@ -1096,21 +1094,9 @@ function App() {
                     </div>
                   </div>;
                 })()}
-                {['N','A','D'].map(sh => {
-                  const normalizedOrders = normalizeShiftOrders(shiftOrders, division, workerCount);
-                  const order = normalizedOrders[sh] || getIdentityShiftOrders(workerCount)[sh];
-                  return <div key={sh} style={{ background:'#111827', border:'1px solid #334155', borderRadius:8, padding:6 }}>
-                    <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', gap:6, marginBottom:5 }}>
-                      <div style={{ fontSize:10, fontWeight:950, color:SHIFT_COLORS[sh]?.bg === '#1a56db' ? '#93c5fd' : sh === 'A' ? '#86efac' : '#fbbf24' }}>{sh} 순서</div>
-                      <button disabled={!cOrderEditMode} onClick={()=>rotateShiftOrder(sh)} style={{ ...buttonBase, background:cOrderEditMode?'#2563eb':'#334155', opacity:cOrderEditMode?1:.45, padding:'4px 7px', fontSize:10 }}>↻ 회전</button>
-                    </div>
-                    <div onPointerMove={e=>handleShiftOrderMove(e, sh)} onPointerUp={endShiftOrderDrag} onPointerCancel={endShiftOrderDrag} style={{ display:'flex', gap:5, overflowX:'auto', paddingBottom:2 }}>
-                      {order.map((nameIdx, idx) => <div key={`${sh}-${nameIdx}-${idx}`} data-order-card="true" onPointerDown={e=>startShiftOrderDrag(e, sh, idx)} style={{ minWidth:50, flex:'0 0 auto', textAlign:'center', padding:'5px 7px', borderRadius:999, background:draggingOrder?.shift===sh && draggingOrder?.idx===idx ? '#334155' : '#1e293b', border:cOrderEditMode?'1px solid #f59e0b':'1px solid #475569', cursor:cOrderEditMode?'grab':'default', touchAction:'none', userSelect:'none', fontSize:10, fontWeight:950 }}>
-                        <span style={{ marginRight:3, color:cOrderEditMode?'#fbbf24':'#64748b', fontSize:9 }}>{cOrderEditMode?'↔':''}</span>{names[nameIdx] || inputNames[nameIdx] || `근무자${nameIdx+1}`}
-                      </div>)}
-                    </div>
-                  </div>;
-                })}
+                <div style={{ fontSize:9, color:'#94a3b8', lineHeight:1.45 }}>
+                  N/A/D별 개별 순서는 사용하지 않습니다. 모든 반과 1·2발전은 저장된 기준 순서 하나로만 근무일마다 자동 회전합니다.
+                </div>
               </div>
             </div>}
           </div>}
