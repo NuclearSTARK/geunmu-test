@@ -1,5 +1,5 @@
 const { useState, useEffect, useRef, useCallback } = React;
-const APP_VERSION = "5.2.5-hotfix-restore";
+const APP_VERSION = "5.2.6-order-engine-fix";
 // ver5.0: 파일 분리(index.html / app.js / firebase.js / styles.css), ver4.9 기능 포함
 
 
@@ -166,11 +166,12 @@ function generateSchedule(names, year, month, division, workerCount, shiftOrders
   const wc = workerCount;
   const normalizedOrders = normalizeShiftOrders(shiftOrders, division, wc);
 
-  // v5.2.4 최종 근무순서 엔진
-  // 대상: A/B/C/D 전체, 1발전/2발전 전체 동일.
+  // v5.2.6 근무순서 엔진
+  // 대상: A/B/D 1발전 우선 보정. 기존 C반/2발전 로직은 건드리지 않음.
   // 원칙: 근무 종류(A/D/N)는 회전 카운트에 영향을 주지 않고, 근무일만 카운트합니다.
   // 휴무는 카운트하지 않습니다.
-  // 예: 1 2 3 4 → 4 1 2 3 → 3 4 1 2 → 휴 → 2 3 4 1
+  // 회전 방향: 오른쪽 마지막 사람이 앞으로 이동.
+  // 예: 1 2 3 4 → 4 1 2 3 → 3 4 1 2 → 휴 → 2 3 4 1 → 1 2 3 4
   let workDayCount = 0;
 
   return Array.from({ length: days }, (_, i) => {
