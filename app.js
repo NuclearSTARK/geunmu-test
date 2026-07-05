@@ -1,5 +1,5 @@
 const { useState, useEffect, useRef, useCallback } = React;
-const APP_VERSION = "5.2.1-admin-rule-fix";
+const APP_VERSION = "5.2.2-admin-default-rule-hardfix";
 // ver5.0: 파일 분리(index.html / app.js / firebase.js / styles.css), ver4.9 기능 포함
 
 
@@ -183,7 +183,7 @@ function generateSchedule(names, year, month, division, workerCount, shiftOrders
   const shiftDayCount = { ...preCount };
   // v5.2.1: ABCD반 1/2발전 모두 같은 근무자 순서 규칙을 사용합니다.
   // 기준 명단에서 근무일마다 1칸씩 오른쪽 회전하고, 휴무일은 회전 카운트에서 제외합니다.
-  let regularBandWorkCount = EMPLOYEE_BANDS.includes(band)
+  let regularBandWorkCount = ['A반','B반','C반','D반'].includes(band)
     ? countRegularBandWorkDaysBefore(new Date(year, month - 1, 1), division, band)
     : 0;
 
@@ -201,8 +201,8 @@ function generateSchedule(names, year, month, division, workerCount, shiftOrders
 
     const assignment = {};
 
-    if (EMPLOYEE_BANDS.includes(band)) {
-      // v5.2.1: ABCD반 1/2발전 공통 근무자 순서 규칙
+    if (['A반','B반','C반','D반'].includes(band)) {
+      // v5.2.2: ABCD반 1/2발전 공통 근무자 순서 규칙
       // 저장된 근무자 명단을 기준으로 근무일마다 1칸씩 오른쪽 회전합니다.
       // 예: 7/1 민식-형태-홍빈-동수 → 7/2 동수-민식-형태-홍빈 → 7/3 홍빈-동수-민식-형태
       // 핵심: 휴무일은 회전 카운트에서 제외합니다.
@@ -467,7 +467,7 @@ function App() {
   const [employeeForm, setEmployeeForm] = useState({ name:'', band:'A반', outputName:'' });
   const [globalNotice, setGlobalNotice] = useState({ text:'', enabled:false, urgent:false });
   const [noticeForm, setNoticeForm] = useState({ text:'', enabled:false, urgent:false });
-  const [adminBandOpen, setAdminBandOpen] = useState('A반');
+  const [adminBandOpen, setAdminBandOpen] = useState('');
   const defaultAdvancedSettings = {
     'A반': { positionOrderEnabled:true, shiftOrderEnabled:false },
     'B반': { positionOrderEnabled:true, shiftOrderEnabled:false },
