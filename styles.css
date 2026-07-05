@@ -5,3 +5,18 @@
     ::-webkit-scrollbar { width: 4px; }
     ::-webkit-scrollbar-track { background: #1e293b; }
     ::-webkit-scrollbar-thumb { background: #475569; border-radius: 2px; }
+
+/* Global notice marquee */
+.notice-marquee {
+  display: inline-block;
+  min-width: 100%;
+  padding-left: 100%;
+  animation: spNoticeMarquee 16s linear infinite;
+}
+@keyframes spNoticeMarquee {
+  0% { transform: translateX(0); }
+  100% { transform: translateX(-100%); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .notice-marquee { animation: none; padding-left: 12px; min-width: auto; }
+}
