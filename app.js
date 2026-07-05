@@ -1,5 +1,5 @@
 const { useState, useEffect, useRef, useCallback } = React;
-const APP_VERSION = "5.2.3-order-firebase-fix";
+const APP_VERSION = "5.2.4-order-db-sync-fix";
 // ver5.0: 파일 분리(index.html / app.js / firebase.js / styles.css), ver4.9 기능 포함
 
 
@@ -163,28 +163,15 @@ function generateSchedule(names, year, month, division, workerCount, shiftOrders
   if (names.length !== workerCount) return [];
   const positions = POSITIONS_BY_DIV_COUNT[division][workerCount];
   const days = getDaysInMonth(year, month);
-  const base = BASE_DATES[division];
   const wc = workerCount;
+  const normalizedOrders = normalizeShiftOrders(shiftOrders, division, wc);
 
-  const refDiff = Math.round((new Date(year, month-1, 1) - base) / 86400000);
-  const bandOffset = BAND_CYCLE_OFFSET[band] ?? 0;
-  const preCount = { A: 0, D: 0, N: 0 };
-  if (refDiff >= 0) {
-    for (let d = 0; d < refDiff; d++) {
-      const s = SHIFT_CYCLE[(((d + bandOffset) % 12) + 12) % 12];
-      if (s !== "휴") preCount[s]++;
-    }
-  } else {
-    for (let d = refDiff; d < 0; d++) {
-      const s = SHIFT_CYCLE[(((d + bandOffset) % 12) + 12) % 12];
-      if (s !== "휴") preCount[s]--;
-    }
-  }
-  const shiftDayCount = { ...preCount };
-  // v5.2.3: ABCD반 1/2발전 공통 근무자 순서 규칙.
-  // 해당 월의 첫 근무일은 저장된 기준 순서 그대로 시작하고,
-  // 이후 근무일마다 맨 뒤 사람이 맨 앞으로 이동합니다. 휴무일은 카운트하지 않습니다.
-  let regularBandWorkCount = 0;
+  // v5.2.4 최종 근무순서 엔진
+  // 대상: A/B/C/D 전체, 1발전/2발전 전체 동일.
+  // 원칙: 근무 종류(A/D/N)는 회전 카운트에 영향을 주지 않고, 근무일만 카운트합니다.
+  // 휴무는 카운트하지 않습니다.
+  // 예: 1 2 3 4 → 4 1 2 3 → 3 4 1 2 → 휴 → 2 3 4 1
+  let workDayCount = 0;
 
   return Array.from({ length: days }, (_, i) => {
     const day = i + 1;
@@ -195,53 +182,18 @@ function generateSchedule(names, year, month, division, workerCount, shiftOrders
 
     if (shift === "휴") return { day, dow, shift, assignment: null, isRed, holiday };
 
-    const rotation = shiftDayCount[shift];
-    shiftDayCount[shift]++;
-
     const assignment = {};
+    const baseOrder = Array.isArray(normalizedOrders?.[shift])
+      ? normalizedOrders[shift]
+      : getCycleOrder(normalizedOrders, wc);
 
-    if (['A반','B반','C반','D반'].includes(band)) {
-      // v5.2.3: ABCD반 1발전/2발전 동일 규칙
-      // 예: 7/1 1-2-3-4 → 7/2 4-1-2-3 → 7/3 3-4-1-2 → 휴무 건너뜀 → 7/5 2-3-4-1
-      // 기준 순서는 근무지설정 > 근무별순서에서 수정/저장합니다.
-      const cycleOrder = getCycleOrder(shiftOrders, wc);
-      const rotation = regularBandWorkCount;
-      regularBandWorkCount++;
-      positions.forEach((pos, posIdx) => {
-        const orderIdx = ((posIdx - rotation) % wc + wc) % wc;
-        assignment[pos] = names[cycleOrder[orderIdx]];
-      });
-    } else if (division === "2발전") {
-      // 2발전: 이미지 검증된 공식 적용 — 건드리지 않음
-      positions.forEach((pos, posIdx) => {
-        let nameIdx;
-        if (shift === "N") {
-          nameIdx = ((DIV2_N_OFFSET - rotation + posIdx) % wc + wc) % wc;
-        } else if (shift === "D") {
-          nameIdx = ((rotation + DIV2_D_OFFSET - posIdx) % wc + wc) % wc;
-        } else { // A
-          if (wc === 4) {
-            const pattern = DIV2_A_PATTERN[((rotation % 4) + 4) % 4];
-            nameIdx = pattern[posIdx];
-          } else {
-            // 5명/6명일 때는 빈칸 방지를 위해 순환 배치 적용
-            nameIdx = ((posIdx + rotation) % wc + wc) % wc;
-          }
-        }
-        assignment[pos] = names[getOrderedNameIndex(shiftOrders, shift, nameIdx, wc)];
-      });
-    } else {
-      // 1발전: 2026년 7월 C반 1발전 기준 패턴으로 전체 1발전 통일
-      // names 순서를 기준으로 왼쪽으로 1칸씩 회전합니다.
-      // 예: names가 [승진, 기훈, 준우, 준형]이면
-      // 7/3 N = 승진,기훈,준우,준형 / 7/4 N = 준형,승진,기훈,준우 / 7/5 N = 준우,준형,승진,기훈
-      const offset = DIV1_SHIFT_OFFSETS[shift] ?? 0;
-      positions.forEach((pos, posIdx) => {
-        const nameIdx = ((offset - rotation + posIdx) % wc + wc) % wc;
-        assignment[pos] = names[getOrderedNameIndex(shiftOrders, shift, nameIdx, wc)];
-      });
-    }
+    positions.forEach((pos, posIdx) => {
+      const orderIdx = ((posIdx - workDayCount) % wc + wc) % wc;
+      const nameIndex = baseOrder[orderIdx];
+      assignment[pos] = names[nameIndex];
+    });
 
+    workDayCount++;
     return { day, dow, shift, assignment, isRed, holiday };
   });
 }
@@ -513,7 +465,27 @@ function App() {
     const attach = () => {
       if (cancelled) return;
       if (!window.firebaseDB) { setTimeout(attach, 200); return; }
-      unsubscribe = window.firebaseDB.listen('employees', data => { if (!cancelled) setEmployees(data || {}); });
+      unsubscribe = window.firebaseDB.listen('employees', async data => {
+        if (cancelled) return;
+        let next = data || {};
+        // v5.2.4: 예전 기기에 localStorage 직원DB가 남아있는 경우 Firebase로 1회 이전합니다.
+        if (!Object.keys(next).length) {
+          try {
+            const legacyKeys = ['sp_employees','employees','employeeDB','staffDB','sp_employee_db'];
+            for (const key of legacyKeys) {
+              const raw = localStorage.getItem(key);
+              if (!raw) continue;
+              const parsed = JSON.parse(raw);
+              if (parsed && typeof parsed === 'object' && Object.keys(parsed).length) {
+                next = parsed;
+                await window.firebaseDB.save('employees', next);
+                break;
+              }
+            }
+          } catch (e) { console.warn('legacy employee migration skipped', e); }
+        }
+        setEmployees(next || {});
+      });
     };
     attach();
     return () => { cancelled = true; if (typeof unsubscribe === 'function') unsubscribe(); };
@@ -832,8 +804,7 @@ function App() {
   const rotateSavedWorkerOrder = () => {
     setShiftOrders(prev => {
       const current = normalizeShiftOrders(prev, division, workerCount);
-      const nextCycle = rotateOrderRight(current.CYCLE, workerCount);
-      // A반은 CYCLE을 사용하고, 다른 반에서도 기본 근무자 순서를 함께 맞추기 위해 N/A/D도 동일 회전합니다.
+      const nextCycle = rotateOrderRight(getCycleOrder(current, workerCount), workerCount);
       setDirtyStatus(true);
       return { ...current, CYCLE: nextCycle, N: nextCycle, A: nextCycle, D: nextCycle };
     });
@@ -1077,26 +1048,30 @@ function App() {
                 <div style={{ color:'#f8fafc', fontSize:12, fontWeight:950 }}>근무별순서</div>
                 <button disabled={!editMode} onClick={() => setCOrderEditMode(v => !v)} style={{ ...buttonBase, opacity:editMode?1:.45, background:cOrderEditMode?'#059669':'#334155', padding:'4px 7px', fontSize:10 }}>{cOrderEditMode ? '완료' : '수정'}</button>
               </div>
-              <div style={{ fontSize:9, color:'#64748b', margin:'5px 0 7px' }}>수정 버튼을 눌렀을 때만 순서 회전/좌우 드래그 가능</div>
-              <div style={{ display:'grid', gap:5 }}>
+              <div style={{ fontSize:9, color:'#64748b', margin:'5px 0 7px' }}>N/A/D 기준순서를 설정합니다. 실제 배치는 휴무를 건너뛰며 근무일마다 자동 회전됩니다.</div>
+              <div style={{ display:'grid', gap:6 }}>
                 {(() => {
                   const normalizedOrders = normalizeShiftOrders(shiftOrders, division, workerCount);
-                  const cycleOrder = getCycleOrder(normalizedOrders, workerCount);
-                  return <div style={{ background:'#111827', border:'1px solid #334155', borderRadius:8, padding:6 }}>
-                    <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', gap:6, marginBottom:5 }}>
-                      <div style={{ fontSize:10, fontWeight:950, color:'#f8fafc' }}>근무자 순서</div>
-                      <button disabled={!cOrderEditMode} onClick={rotateSavedWorkerOrder} style={{ ...buttonBase, background:cOrderEditMode?'#2563eb':'#334155', opacity:cOrderEditMode?1:.45, padding:'4px 7px', fontSize:10 }}>↻ 순서 회전</button>
-                    </div>
-                    <div onPointerMove={e=>handleShiftOrderMove(e, 'CYCLE')} onPointerUp={endShiftOrderDrag} onPointerCancel={endShiftOrderDrag} style={{ display:'flex', gap:5, overflowX:'auto', paddingBottom:2 }}>
-                      {cycleOrder.map((nameIdx, idx) => <div key={`cycle-${nameIdx}-${idx}`} data-order-card="true" onPointerDown={e=>startShiftOrderDrag(e, 'CYCLE', idx)} style={{ minWidth:50, flex:'0 0 auto', textAlign:'center', padding:'5px 7px', borderRadius:999, background:draggingOrder?.shift==='CYCLE' && draggingOrder?.idx===idx ? '#334155' : '#1e293b', border:cOrderEditMode?'1px solid #f59e0b':'1px solid #475569', cursor:cOrderEditMode?'grab':'default', touchAction:'none', userSelect:'none', fontSize:10, fontWeight:950 }}>
-                        <span style={{ marginRight:3, color:cOrderEditMode?'#fbbf24':'#64748b', fontSize:9 }}>{cOrderEditMode?'↔':''}</span>{names[nameIdx] || inputNames[nameIdx] || `근무자${nameIdx+1}`}
-                      </div>)}
-                    </div>
-                  </div>;
+                  const rows = [
+                    ['N','N근무','#60a5fa'],
+                    ['A','A근무','#86efac'],
+                    ['D','D근무','#fbbf24']
+                  ];
+                  return rows.map(([sh,label,color]) => {
+                    const order = normalizedOrders[sh] || getIdentityShiftOrders(workerCount)[sh];
+                    return <div key={sh} style={{ background:'#111827', border:'1px solid #334155', borderRadius:8, padding:6 }}>
+                      <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', gap:6, marginBottom:5 }}>
+                        <div style={{ fontSize:10, fontWeight:950, color }}>{label}</div>
+                        <button disabled={!cOrderEditMode} onClick={()=>rotateShiftOrder(sh)} style={{ ...buttonBase, background:cOrderEditMode?'#2563eb':'#334155', opacity:cOrderEditMode?1:.45, padding:'4px 7px', fontSize:10 }}>↻ 회전</button>
+                      </div>
+                      <div onPointerMove={e=>handleShiftOrderMove(e, sh)} onPointerUp={endShiftOrderDrag} onPointerCancel={endShiftOrderDrag} style={{ display:'flex', gap:5, overflowX:'auto', paddingBottom:2 }}>
+                        {order.map((nameIdx, idx) => <div key={`${sh}-${nameIdx}-${idx}`} data-order-card="true" onPointerDown={e=>startShiftOrderDrag(e, sh, idx)} style={{ minWidth:50, flex:'0 0 auto', textAlign:'center', padding:'5px 7px', borderRadius:999, background:draggingOrder?.shift===sh && draggingOrder?.idx===idx ? '#334155' : '#1e293b', border:cOrderEditMode?'1px solid #f59e0b':'1px solid #475569', cursor:cOrderEditMode?'grab':'default', touchAction:'none', userSelect:'none', fontSize:10, fontWeight:950 }}>
+                          <span style={{ marginRight:3, color:cOrderEditMode?'#fbbf24':'#64748b', fontSize:9 }}>{cOrderEditMode?'↔':''}</span>{names[nameIdx] || inputNames[nameIdx] || `근무자${nameIdx+1}`}
+                        </div>)}
+                      </div>
+                    </div>;
+                  });
                 })()}
-                <div style={{ fontSize:9, color:'#94a3b8', lineHeight:1.45 }}>
-                  N/A/D별 개별 순서는 사용하지 않습니다. 모든 반과 1·2발전은 저장된 기준 순서 하나로만 근무일마다 자동 회전합니다.
-                </div>
               </div>
             </div>}
           </div>}
@@ -1181,6 +1156,9 @@ function App() {
               </div> : <div style={{ display:'grid', gap:12 }}>
                 <div style={{ background:'#111827', border:'1px solid #334155', borderRadius:14, overflow:'hidden' }}>
                   <div style={{ padding:'12px 12px', fontWeight:950, fontSize:16, borderBottom:'1px solid #334155' }}>👥 직원 DB 관리</div>
+                  <div style={{ margin:'10px 12px 0', fontSize:11, color:'#86efac', background:'#052e16', border:'1px solid #14532d', borderRadius:10, padding:'8px 10px', fontWeight:900 }}>
+                    🟢 Firebase 연결됨 · 직원DB {activeEmployeeList.length}명 동기화
+                  </div>
                   <div style={{ padding:12, display:'grid', gap:8 }}>
                     <input value={employeeForm.name} onChange={e=>setEmployeeForm(f=>({...f,name:e.target.value}))} placeholder="실명 예: 문태헌" style={{ ...selectStyle, width:'100%', boxSizing:'border-box' }} />
                     <input value={employeeForm.outputName} onChange={e=>setEmployeeForm(f=>({...f,outputName:e.target.value}))} placeholder="출력이름 예: 태헌 / 진수A" style={{ ...selectStyle, width:'100%', boxSizing:'border-box' }} />
