@@ -1,5 +1,5 @@
 const { useState, useEffect, useRef, useCallback } = React;
-const APP_VERSION = "6.0.1-monthly-reset-fix";
+const APP_VERSION = "6.0.2-continuous-rotation-restored";
 // ver5.0: 파일 분리(index.html / app.js / firebase.js / styles.css), ver4.9 기능 포함
 
 
@@ -303,8 +303,11 @@ function generateSchedule(names, year, month, division, workerCount, shiftOrders
   // v6.0: 근무순서 계산은 rotationEngineABD / rotationEngineC로 완전 분리했습니다.
   // 수동 날짜 override 기능은 운영에서 제외했으므로 근무표 계산에는 사용하지 않습니다.
   const overrides = {};
-  // v6.0.1: 기준일을 그 달 1일로 매달 새로 잡습니다. (7월 이후에도 계속 정확하도록)
-  const monthBaseDate = new Date(year, month - 1, 1);
+  // v6.0.2: v6.0.1에서 "매달 1일 기준으로 리셋"했더니 달이 바뀔 때 이어지던 순서가
+  // 끊어져 버렸습니다(7/31=3,4,1,2 다음 8/1이 그대로 1,2,3,4로 리셋됨).
+  // 근무자가 그대로면 달이 바뀌어도 회전은 계속 이어져야 하므로,
+  // 기준일은 다시 고정된 2026-07-01(ORDER_ENGINE_BASE_DATE)로 되돌립니다.
+  const monthBaseDate = ORDER_ENGINE_BASE_DATE;
 
   return Array.from({ length: days }, (_, i) => {
     const day = i + 1;

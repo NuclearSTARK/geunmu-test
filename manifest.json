@@ -1,7 +1,7 @@
 {
   "name": "Seul Police",
   "short_name": "Seul Police",
-  "start_url": "./?v=6.0.1",
+  "start_url": "./?v=6.0.2",
   "display": "standalone",
   "background_color": "#0b1730",
   "theme_color": "#0b1730",
