@@ -1,5 +1,5 @@
 const { useState, useEffect, useRef, useCallback } = React;
-const APP_VERSION = "5.5.0-work-logic-reset-v2";
+const APP_VERSION = "5.5.1-position-label-display-fix";
 // ver5.0: 파일 분리(index.html / app.js / firebase.js / styles.css), ver4.9 기능 포함
 
 
@@ -530,6 +530,10 @@ function App() {
 
   const positions = POSITIONS_BY_DIV_COUNT[division][workerCount];
   const displayPositionLabels = normalizePositionLabels(positionLabels, division, workerCount);
+  const isABDOnePlant = division === '1발전' && ['A반','B반','D반'].includes(band);
+  const visiblePositionLabels = isABDOnePlant && workerCount === 4
+    ? ['입초', '소내', '검색', '기록']
+    : displayPositionLabels;
   const yearOptions = Array.from({ length: 6 }, (_, i) => 2023 + i);
   const monthOptions = Array.from({ length: 12 }, (_, i) => i + 1);
   const todayDay = today.getFullYear() === selectedYear && today.getMonth()+1 === selectedMonth ? today.getDate() : null;
@@ -1184,7 +1188,7 @@ function App() {
 
   const selectStyle = { padding:'8px 12px', background:'#0f172a', border:'1.5px solid #334155', borderRadius:8, color:'#f1f5f9', fontSize:14, fontWeight:800, outline:'none' };
   const buttonBase = { border:'none', borderRadius:8, color:'#fff', fontWeight:900, cursor:'pointer' };
-  const gridCols = `82px 42px ${displayPositionLabels.map(() => '1fr').join(' ')}`;
+  const gridCols = `82px 42px ${visiblePositionLabels.map(() => '1fr').join(' ')}`;
 
   return (
     <div style={{ minHeight:'100vh', background:'linear-gradient(135deg,#0f172a 0%,#1e293b 100%)', fontFamily:"'Segoe UI','Apple SD Gothic Neo',sans-serif", color:'#e2e8f0', padding:'10px 8px' }}>
@@ -1286,7 +1290,7 @@ function App() {
                 <button onClick={()=>applyPositionPreset('RECORD_SECOND')} style={{ ...buttonBase, background:'#1e293b', border:'1px solid #334155', padding:'6px 4px', fontSize:9 }}>입초-기록-검색-소내</button>
               </div>}
               <div style={{ display:'grid', gap:5, overflow:'hidden', paddingBottom:0, width:'100%' }}>
-                {displayPositionLabels.map((label, idx) => <div key={`position-${idx}`} data-pos-card="true" style={{ minWidth:0, width:'100%', padding:'6px 6px', borderRadius:8, background:'#111827', border:positionEditMode?'1px solid #f59e0b':'1px solid #334155', userSelect:'none', fontSize:10, fontWeight:900, overflow:'hidden' }}>
+                {visiblePositionLabels.map((label, idx) => <div key={`position-${idx}`} data-pos-card="true" style={{ minWidth:0, width:'100%', padding:'6px 6px', borderRadius:8, background:'#111827', border:positionEditMode?'1px solid #f59e0b':'1px solid #334155', userSelect:'none', fontSize:10, fontWeight:900, overflow:'hidden' }}>
                   <div style={{ display:'grid', gridTemplateColumns:'24px 1fr 26px 26px', alignItems:'center', gap:5 }}>
                     <span style={{ color:'#94a3b8', fontSize:10, fontWeight:900, textAlign:'center' }}>{idx+1}</span>
                     <input
@@ -1350,7 +1354,7 @@ function App() {
             <span style={{ fontSize:11, color:'#94a3b8' }}>🚔 순찰자 · 🔴 주말/공휴일</span>
           </div>
           <div style={{ display:'grid', gridTemplateColumns:gridCols, background:'#0f172a', borderBottom:'1px solid #334155', padding:'0 10px' }}>
-            {['일/요일','근무',...displayPositionLabels].map(h => <div key={h} style={{ padding:'8px 4px', fontSize:11, fontWeight:800, color:'#94a3b8', textAlign:'center' }}>{h}</div>)}
+            {['일/요일','근무',...visiblePositionLabels].map(h => <div key={h} style={{ padding:'8px 4px', fontSize:11, fontWeight:800, color:'#94a3b8', textAlign:'center' }}>{h}</div>)}
           </div>
           {schedule.map((day, idx) => {
             const isToday = day.day === todayDay;
