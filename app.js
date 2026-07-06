@@ -1,5 +1,5 @@
 const { useState, useEffect, useRef, useCallback } = React;
-const APP_VERSION = "5.4.5-position-order-fix";
+const APP_VERSION = "5.5.0-work-logic-reset-v2";
 // ver5.0: 파일 분리(index.html / app.js / firebase.js / styles.css), ver4.9 기능 포함
 
 
@@ -188,6 +188,29 @@ function rotateNamesRight(order) {
   return [arr[arr.length - 1], ...arr.slice(0, arr.length - 1)];
 }
 
+const CANONICAL_POSITION_ORDER = {
+  4: ["입초", "소내", "검색", "기록"],
+  5: ["입초", "소내", "검색", "기록", "출검"],
+  6: ["입초", "소내", "검색", "기록", "출검", "소내2"],
+};
+const POSITION_PRESETS = {
+  DEFAULT: ["입초", "소내", "검색", "기록", "출검", "소내2"],
+  RECORD_SECOND: ["입초", "기록", "검색", "소내", "출검", "소내2"],
+};
+function cleanPositionName(value) {
+  return String(value || "").replace(/\(.*?\)/g, "").trim();
+}
+function getCanonicalPositionIndex(label, fallbackIdx, count) {
+  const base = CANONICAL_POSITION_ORDER[count] || CANONICAL_POSITION_ORDER[4];
+  const cleaned = cleanPositionName(label);
+  const found = base.findIndex(v => cleanPositionName(v) === cleaned);
+  return found >= 0 ? found : fallbackIdx;
+}
+function getPositionPreset(type, count) {
+  const arr = POSITION_PRESETS[type] || POSITION_PRESETS.DEFAULT;
+  return arr.slice(0, count);
+}
+
 function normalizeManualOrderNames(values, fallbackNames, count) {
   const result = Array.isArray(values) ? values.slice(0, count).map(v => String(v || "").trim()) : [];
   const fallback = Array.isArray(fallbackNames) ? fallbackNames : [];
@@ -197,24 +220,25 @@ function normalizeManualOrderNames(values, fallbackNames, count) {
   return result.slice(0, count);
 }
 
-function generateSchedule(names, year, month, division, workerCount, shiftOrders, band = "C반", manualOverrides = {}) {
+function generateSchedule(names, year, month, division, workerCount, shiftOrders, band = "C반", manualOverrides = {}, customPositionLabels = null) {
   if (names.length !== workerCount) return [];
   const positions = POSITIONS_BY_DIV_COUNT[division][workerCount];
+  const displayLabels = normalizePositionLabels(customPositionLabels, division, workerCount);
   const days = getDaysInMonth(year, month);
   const wc = workerCount;
   const normalizedOrders = normalizeShiftOrders(shiftOrders, division, wc);
-  const globalBaseOrder = getCycleOrder(normalizedOrders, wc);
-  const baseNamesOrder = getDisplayOrderNames(globalBaseOrder, names, wc);
-  const overrides = normalizeManualOverrides(manualOverrides);
 
-  // v5.4.0 근무순서 엔진
-  // 1) 기본 순서는 저장된 기준명단(CYCLE)을 사용합니다.
-  // 2) 휴무는 회전하지 않습니다.
-  // 3) 근무일마다 오른쪽 마지막 사람이 맨 앞으로 이동합니다.
-  // 4) 관리자 수동 수정값이 있으면 해당 날짜에 자동순서보다 우선 적용합니다.
-  // 5) mode=basis이면 해당 날짜부터 새 기준명단으로 이어서 회전합니다.
-  // 6) mode=single이면 해당 날짜만 바꾸고 다음날은 기존 자동순서 흐름을 유지합니다.
-  let rollingNamesOrder = [...baseNamesOrder];
+  // v5.5.0 새 근무자 배치 엔진
+  // - 근무자 명단은 월/반/발전별 저장값을 기준으로 사용합니다.
+  // - 매월 첫 근무일은 저장된 순서 그대로 시작합니다.
+  // - 휴무일은 카운트하지 않습니다.
+  // - 근무일마다 마지막 근무자가 맨 앞으로 이동합니다.
+  // - 근무지 순서/명칭은 표시 위치만 바꾸며, 기준 근무지 순서는 [입초, 소내, 검색, 기록]입니다.
+  // 예) 표시순서 [입초,소내,검색,기록] → 1 2 3 4 / 4 1 2 3
+  // 예) 표시순서 [입초,기록,검색,소내] → 1 4 3 2 / 4 3 2 1
+  const cycleIndexOrder = getCycleOrder(normalizedOrders, wc);
+  let rollingNamesOrder = getDisplayOrderNames(cycleIndexOrder, names, wc);
+  const overrides = normalizeManualOverrides(manualOverrides);
 
   return Array.from({ length: days }, (_, i) => {
     const day = i + 1;
@@ -227,24 +251,20 @@ function generateSchedule(names, year, month, division, workerCount, shiftOrders
 
     const manual = overrides[day];
     let dayNamesOrder = [...rollingNamesOrder];
-
     if (manual && Array.isArray(manual.names) && manual.names.length) {
       const manualNames = normalizeManualOrderNames(manual.names, rollingNamesOrder, wc);
       dayNamesOrder = manualNames;
-      if (manual.mode === "basis") {
-        rollingNamesOrder = [...manualNames];
-      }
+      if (manual.mode === "basis") rollingNamesOrder = [...manualNames];
     }
 
     const assignment = {};
     positions.forEach((pos, posIdx) => {
-      assignment[pos] = dayNamesOrder[posIdx] || "";
+      const label = displayLabels[posIdx] || pos;
+      const canonicalIdx = getCanonicalPositionIndex(label, posIdx, wc);
+      assignment[pos] = dayNamesOrder[canonicalIdx] || "";
     });
 
-    // 근무일 처리 후 다음 근무일 기준으로 1칸 오른쪽 회전.
-    // single 수동수정은 rollingNamesOrder를 바꾸지 않고 회전만 이어갑니다.
     rollingNamesOrder = rotateNamesRight(rollingNamesOrder);
-
     return { day, dow, shift, assignment, isRed, holiday, manualOverride: Boolean(manual) };
   });
 }
@@ -278,33 +298,13 @@ function getDefaultShiftOrders(division, count) {
   return getIdentityShiftOrders(count);
 }
 
-// A/B/D반 1발전의 기본 표시 순서에서 "소내"와 "기록"의 위치만 서로 바꿉니다.
-// 주의: POSITIONS_BY_DIV_COUNT(실제 근무자 배치 계산에 쓰이는 원본 배열)는 전혀 건드리지 않고,
-// 화면에 보여지는 순서(positionLabels)만 바꾸는 것이라 근무자 자동배치 로직에는 영향이 없습니다.
-const SWAPPED_SONAE_GIROK_BANDS = ["A반", "B반", "D반"];
-function getDefaultPositionLabels(division, count, band) {
-  const base = POSITIONS_BY_DIV_COUNT[division][count].map(p => p.replace(/\(.*\)/, ""));
-  if (division === "1발전" && SWAPPED_SONAE_GIROK_BANDS.includes(band)) {
-    const idxGirok = base.indexOf("기록");
-    const idxSonae = base.indexOf("소내");
-    if (idxGirok !== -1 && idxSonae !== -1) {
-      const swapped = [...base];
-      swapped[idxGirok] = "소내";
-      swapped[idxSonae] = "기록";
-      return swapped;
-    }
-  }
-  return base;
+function getDefaultPositionLabels(division, count) {
+  return POSITIONS_BY_DIV_COUNT[division][count].map(p => p.replace(/\(.*\)/, ""));
 }
 
-function normalizePositionLabels(labels, division, count, band) {
-  const defaults = getDefaultPositionLabels(division, count, band);
-  const legacyDefaults = POSITIONS_BY_DIV_COUNT[division][count].map(p => p.replace(/\(.*\)/, ""));
-  let result = Array.isArray(labels) ? labels.slice(0, count).map(v => String(v ?? "").trim()) : [];
-  // 예전에 저장된 값이 없거나, 예전 기본 순서 그대로였다면 새 기본 순서(소내/기록 교체)로 1회 업그레이드합니다.
-  // 이미 직접 순서를 바꿔서 저장한 경우(legacyDefaults와 다름)는 그대로 존중하고 건드리지 않습니다.
-  const matchesLegacyDefault = result.length === count && result.every((v, i) => v === legacyDefaults[i]);
-  if (!result.length || matchesLegacyDefault) result = [...defaults];
+function normalizePositionLabels(labels, division, count) {
+  const defaults = getDefaultPositionLabels(division, count);
+  const result = Array.isArray(labels) ? labels.slice(0, count).map(v => String(v ?? "").trim()) : [];
   while (result.length < count) result.push(defaults[result.length] || `포지션${result.length + 1}`);
   return result.map((v, i) => v || defaults[i] || `포지션${i + 1}`);
 }
@@ -314,7 +314,7 @@ function normalizeRemoteData(data, band, division) {
   let nextNames = Array.isArray(data?.names) ? data.names.slice(0, count).map(v => String(v ?? "")) : DEFAULT_NAMES[count];
   while (nextNames.length < count) nextNames.push(DEFAULT_NAMES[count][nextNames.length] || "");
   const nextOrders = normalizeShiftOrders(data?.shiftOrders, division, count);
-  const nextPositionLabels = normalizePositionLabels(data?.positionLabels, division, count, band);
+  const nextPositionLabels = normalizePositionLabels(data?.positionLabels, division, count);
   return { band, division, workerCount: count, names: nextNames, shiftOrders: nextOrders, positionLabels: nextPositionLabels };
 }
 
@@ -462,8 +462,8 @@ function App() {
   const [names, setNames] = useState(DEFAULT_NAMES[4]);
   const [inputNames, setInputNames] = useState(DEFAULT_NAMES[4]);
   const [shiftOrders, setShiftOrders] = useState(getDefaultShiftOrders(initDivision, 4));
-  const [positionLabels, setPositionLabels] = useState(getDefaultPositionLabels(initDivision, 4, initBand));
-  const [schedule, setSchedule] = useState(() => generateSchedule(DEFAULT_NAMES[4], today.getFullYear(), today.getMonth()+1, initDivision, 4, getDefaultShiftOrders(initDivision, 4), initBand));
+  const [positionLabels, setPositionLabels] = useState(getDefaultPositionLabels(initDivision, 4));
+  const [schedule, setSchedule] = useState(() => generateSchedule(DEFAULT_NAMES[4], today.getFullYear(), today.getMonth()+1, initDivision, 4, getDefaultShiftOrders(initDivision, 4), initBand, {}, getDefaultPositionLabels(initDivision, 4)));
   const [syncStatus, setSyncStatus] = useState('Firebase 연결 준비중');
   const [isLoaded, setIsLoaded] = useState(false);
   const [savedToast, setSavedToast] = useState(false);
@@ -529,7 +529,7 @@ function App() {
   const saveTimerRef = useRef(null);
 
   const positions = POSITIONS_BY_DIV_COUNT[division][workerCount];
-  const displayPositionLabels = normalizePositionLabels(positionLabels, division, workerCount, band);
+  const displayPositionLabels = normalizePositionLabels(positionLabels, division, workerCount);
   const yearOptions = Array.from({ length: 6 }, (_, i) => 2023 + i);
   const monthOptions = Array.from({ length: 12 }, (_, i) => i + 1);
   const todayDay = today.getFullYear() === selectedYear && today.getMonth()+1 === selectedMonth ? today.getDate() : null;
@@ -628,7 +628,7 @@ function App() {
         }
         const normalized = sourceData
           ? normalizeRemoteData(sourceData, profileBand, profileDivision)
-          : { band: profileBand, division: profileDivision, workerCount:4, names:DEFAULT_NAMES[4], shiftOrders:getDefaultShiftOrders(profileDivision,4), positionLabels:getDefaultPositionLabels(profileDivision,4,profileBand) };
+          : { band: profileBand, division: profileDivision, workerCount:4, names:DEFAULT_NAMES[4], shiftOrders:getDefaultShiftOrders(profileDivision,4), positionLabels:getDefaultPositionLabels(profileDivision,4) };
         setProfileRemoteData(normalized);
       });
     };
@@ -685,7 +685,7 @@ function App() {
         }
         const normalized = sourceData
           ? normalizeRemoteData(sourceData, band, division)
-          : { band, division, workerCount:4, names:DEFAULT_NAMES[4], shiftOrders:getDefaultShiftOrders(division,4), positionLabels:getDefaultPositionLabels(division,4,band) };
+          : { band, division, workerCount:4, names:DEFAULT_NAMES[4], shiftOrders:getDefaultShiftOrders(division,4), positionLabels:getDefaultPositionLabels(division,4) };
         const core = makeSavableCore(normalized);
         lastRemoteCoreRef.current = data ? JSON.stringify(core) : '';
         applyingRemoteRef.current = true;
@@ -694,7 +694,7 @@ function App() {
         setNames(normalized.names);
         setShiftOrders(normalized.shiftOrders);
         setPositionLabels(normalized.positionLabels);
-        setSchedule(generateSchedule(normalized.names, selectedYear, selectedMonth, division, normalized.workerCount, normalized.shiftOrders, band, manualOverrides));
+        setSchedule(generateSchedule(normalized.names, selectedYear, selectedMonth, division, normalized.workerCount, normalized.shiftOrders, band, manualOverrides, normalized.positionLabels));
         setIsLoaded(true);
         setTimeout(() => { applyingRemoteRef.current = false; }, 80);
       });
@@ -704,7 +704,7 @@ function App() {
   }, [band, division, selectedYear, selectedMonth]);
 
   useEffect(() => {
-    setSchedule(generateSchedule(names, selectedYear, selectedMonth, division, workerCount, shiftOrders, band, manualOverrides));
+    setSchedule(generateSchedule(names, selectedYear, selectedMonth, division, workerCount, shiftOrders, band, manualOverrides, positionLabels));
   }, [names, selectedYear, selectedMonth, division, workerCount, shiftOrders, band, manualOverrides]);
 
   const makeCurrentCore = useCallback(() => makeSavableCore({ band, division, workerCount, names, shiftOrders, positionLabels }), [band, division, workerCount, names, shiftOrders, positionLabels]);
@@ -735,7 +735,7 @@ function App() {
     setInputNames(snapshot.names);
     setShiftOrders(snapshot.shiftOrders);
     setPositionLabels(snapshot.positionLabels);
-    setSchedule(generateSchedule(snapshot.names, selectedYear, selectedMonth, snapshot.division, snapshot.workerCount, snapshot.shiftOrders, snapshot.band, manualOverrides));
+    setSchedule(generateSchedule(snapshot.names, selectedYear, selectedMonth, snapshot.division, snapshot.workerCount, snapshot.shiftOrders, snapshot.band, manualOverrides, snapshot.positionLabels));
     setTimeout(() => { applyingRemoteRef.current = false; }, 80);
     saveSetting({ ...snapshot, year:selectedYear, month:selectedMonth })?.then(() => {
       const t = formatSavedTime();
@@ -893,14 +893,14 @@ function App() {
       ? normalizeRemoteData(sourceData, manualForm.band, manualForm.division)
       : (manualForm.band === band && manualForm.division === division
           ? { band, division, workerCount, names, shiftOrders, positionLabels }
-          : { band: manualForm.band, division: manualForm.division, workerCount:4, names:DEFAULT_NAMES[4], shiftOrders:getDefaultShiftOrders(manualForm.division,4), positionLabels:getDefaultPositionLabels(manualForm.division,4,manualForm.band) });
+          : { band: manualForm.band, division: manualForm.division, workerCount:4, names:DEFAULT_NAMES[4], shiftOrders:getDefaultShiftOrders(manualForm.division,4), positionLabels:getDefaultPositionLabels(manualForm.division,4) });
     let existingOverrides = {};
     try {
       if (window.firebaseDB?.read) existingOverrides = await window.firebaseDB.read(getManualOverridePath(y, m, manualForm.band, manualForm.division)) || {};
     } catch {}
-    const sc = generateSchedule(normalized.names, y, m, manualForm.division, normalized.workerCount, normalized.shiftOrders, manualForm.band, existingOverrides);
+    const sc = generateSchedule(normalized.names, y, m, manualForm.division, normalized.workerCount, normalized.shiftOrders, manualForm.band, existingOverrides, normalized.positionLabels);
     const row = sc.find(item => item.day === d);
-    const labels = normalizePositionLabels(normalized.positionLabels, manualForm.division, normalized.workerCount, manualForm.band);
+    const labels = normalizePositionLabels(normalized.positionLabels, manualForm.division, normalized.workerCount);
     const posKeys = POSITIONS_BY_DIV_COUNT[manualForm.division][normalized.workerCount];
     const nextNames = labels.map((label, idx) => {
       const key = posKeys.find(p => cleanLabel(p) === cleanLabel(label)) || posKeys[idx];
@@ -982,6 +982,34 @@ function App() {
     setTimeout(() => setSavedToast(false), 1400);
   };
 
+  const moveWorkerSlot = (idx, dir) => {
+    if (!editMode) return;
+    const nextIdx = idx + dir;
+    if (nextIdx < 0 || nextIdx >= workerCount) return;
+    const arr = [...inputNames];
+    [arr[idx], arr[nextIdx]] = [arr[nextIdx], arr[idx]];
+    setInputNames(arr);
+    setWorkerNamesDirty(true);
+    setDirtyStatus(true);
+  };
+
+  const movePositionSlot = (idx, dir) => {
+    if (!positionEditMode) return;
+    const nextIdx = idx + dir;
+    if (nextIdx < 0 || nextIdx >= workerCount) return;
+    const arr = [...displayPositionLabels];
+    [arr[idx], arr[nextIdx]] = [arr[nextIdx], arr[idx]];
+    setPositionLabels(arr);
+    setDirtyStatus(true);
+  };
+
+  const applyPositionPreset = (type) => {
+    if (!editMode) return;
+    setPositionLabels(getPositionPreset(type, workerCount));
+    setPositionEditMode(true);
+    setDirtyStatus(true);
+  };
+
   const handleWorkerCountChange = (count) => {
     setWorkerCount(count);
     const nextNames = inputNames.slice(0, count);
@@ -990,7 +1018,7 @@ function App() {
     setWorkerNamesDirty(true);
     if (nextNames.every(Boolean) && new Set(nextNames.map(v => String(v).trim())).size === count) setNames(nextNames.map(v => String(v).trim()));
     setShiftOrders(getDefaultShiftOrders(division, count));
-    setPositionLabels(getDefaultPositionLabels(division, count, band));
+    setPositionLabels(getDefaultPositionLabels(division, count));
   };
 
   const updateAdvancedSetting = (targetBand, key, value) => {
@@ -1049,7 +1077,7 @@ function App() {
   const movePositionToIndex = (from, to) => {
     if (!positionEditMode) return;
     setPositionLabels(prev => {
-      const arr = normalizePositionLabels(prev, division, workerCount, band);
+      const arr = normalizePositionLabels(prev, division, workerCount);
       const safeTo = Math.max(0, Math.min(arr.length - 1, to));
       if (from === safeTo) return arr;
       const [picked] = arr.splice(from, 1);
@@ -1061,7 +1089,7 @@ function App() {
 
   const setPositionLabelAt = (idx, value) => {
     setPositionLabels(prev => {
-      const arr = normalizePositionLabels(prev, division, workerCount, band);
+      const arr = normalizePositionLabels(prev, division, workerCount);
       arr[idx] = String(value ?? '');
       setDirtyStatus(true);
       return [...arr];
@@ -1141,12 +1169,12 @@ function App() {
     const ty = today.getFullYear();
     const tm = today.getMonth() + 1;
     const td = today.getDate();
-    const sc = generateSchedule(profileRemoteData.names, ty, tm, profileDivision, profileRemoteData.workerCount, profileRemoteData.shiftOrders, profileBand, profileManualOverrides);
+    const sc = generateSchedule(profileRemoteData.names, ty, tm, profileDivision, profileRemoteData.workerCount, profileRemoteData.shiftOrders, profileBand, profileManualOverrides, profileRemoteData.positionLabels);
     const row = sc.find(d => d.day === td);
     if (!row || row.shift === '휴') return { name: profileDisplayName || personalName, band: profileBand, division: profileDivision, shift: '휴', position: '휴무', status: '휴무', note: '오늘은 휴무입니다.' };
     const targetName = profileDisplayName || personalName;
     let foundLabel = '';
-    const labels = normalizePositionLabels(profileRemoteData.positionLabels, profileDivision, profileRemoteData.workerCount, profileBand);
+    const labels = normalizePositionLabels(profileRemoteData.positionLabels, profileDivision, profileRemoteData.workerCount);
     for (const label of labels) {
       const key = POSITIONS_BY_DIV_COUNT[profileDivision][profileRemoteData.workerCount].find(p => cleanLabel(p) === cleanLabel(label)) || label;
       if (row.assignment?.[key] === targetName) { foundLabel = cleanLabel(label); break; }
@@ -1233,11 +1261,16 @@ function App() {
                 </div>
                 {workerNamesDirty && <span style={{ fontSize:10, fontWeight:950, color:'#fbbf24', background:'rgba(251,191,36,.12)', border:'1px solid rgba(251,191,36,.35)', borderRadius:999, padding:'4px 7px' }}>변경됨</span>}
               </div>
-              <div style={{ display:'grid', gridTemplateColumns:'repeat(2,minmax(0,1fr))', gap:5, width:'100%' }}>
-                {inputNames.map((name, idx) => <select key={idx} value={name} disabled={!editMode} onChange={e=>setWorkerNameAt(idx,e.target.value)} style={{ ...selectStyle, padding:'6px 7px', fontSize:11 }}>
-                  <option value="">근무자 {idx+1}</option>
-                  {getWorkerOptions(idx).map(emp => <option key={emp.id} value={emp.displayName || emp.name}>{emp.displayName || emp.name}</option>)}
-                </select>)}
+              <div style={{ display:'grid', gap:5, width:'100%' }}>
+                {inputNames.map((name, idx) => <div key={idx} style={{ display:'grid', gridTemplateColumns:'26px 1fr 26px 26px', alignItems:'center', gap:5 }}>
+                  <span style={{ color:'#94a3b8', fontSize:10, fontWeight:900, textAlign:'center' }}>{idx+1}</span>
+                  <select value={name} disabled={!editMode} onChange={e=>setWorkerNameAt(idx,e.target.value)} style={{ ...selectStyle, padding:'6px 7px', fontSize:11, width:'100%' }}>
+                    <option value="">근무자 {idx+1}</option>
+                    {getWorkerOptions(idx).map(emp => <option key={emp.id} value={emp.displayName || emp.name}>{emp.displayName || emp.name}</option>)}
+                  </select>
+                  <button disabled={!editMode || idx===0} onClick={()=>moveWorkerSlot(idx,-1)} style={{ ...buttonBase, padding:'5px 0', fontSize:11, background:'#1e293b', opacity:editMode && idx>0?1:.35 }}>↑</button>
+                  <button disabled={!editMode || idx===workerCount-1} onClick={()=>moveWorkerSlot(idx,1)} style={{ ...buttonBase, padding:'5px 0', fontSize:11, background:'#1e293b', opacity:editMode && idx<workerCount-1?1:.35 }}>↓</button>
+                </div>)}
               </div>
               <button disabled={!editMode} onClick={saveWorkerNames} style={{ ...buttonBase, opacity:editMode?1:.45, marginTop:7, width:'100%', background:'linear-gradient(135deg,#0ea5e9,#2563eb)', padding:'7px 8px', fontSize:11 }}>근무자 명단 저장</button>
             </div>
@@ -1247,11 +1280,15 @@ function App() {
                 <div style={{ color:'#f8fafc', fontSize:11, fontWeight:950 }}>근무지순서/명칭</div>
                 <button disabled={!editMode} onClick={() => setPositionEditMode(v => !v)} style={{ ...buttonBase, opacity:editMode?1:.45, background:positionEditMode?'#059669':'#334155', padding:'4px 6px', fontSize:10 }}>{positionEditMode ? '완료' : '수정'}</button>
               </div>
-              <div style={{ fontSize:8, color:'#64748b', margin:'4px 0 6px', lineHeight:1.3 }}>수정 시 텍스트 변경 가능 · ↔ 손잡이로 좌우 이동</div>
-              <div ref={positionRailRef} onPointerMove={handlePositionMove} onPointerUp={endPositionDrag} onPointerCancel={endPositionDrag} style={{ display:'grid', gridTemplateColumns:'repeat(2,minmax(0,1fr))', gap:5, overflow:'hidden', paddingBottom:0, width:'100%' }}>
-                {displayPositionLabels.map((label, idx) => <div key={`position-${idx}`} data-pos-card="true" style={{ minWidth:0, width:'100%', textAlign:'center', padding:'6px 6px', borderRadius:8, background:draggingPosIndex===idx?'#334155':'#111827', border:positionEditMode?'1px solid #f59e0b':'1px solid #334155', touchAction:'pan-y', userSelect:'none', fontSize:10, fontWeight:900, overflow:'hidden' }}>
-                  <div style={{ display:'grid', gridTemplateColumns:'18px 1fr', alignItems:'center', gap:4 }}>
-                    <span onPointerDown={e=>startPositionDrag(e, idx)} style={{ color:positionEditMode?'#fbbf24':'#64748b', fontSize:10, cursor:positionEditMode?'grab':'default', padding:'4px 1px', touchAction:'none' }}>{positionEditMode?'↔':'·'}</span>
+              <div style={{ fontSize:8, color:'#64748b', margin:'4px 0 6px', lineHeight:1.3 }}>텍스트 수정 가능 · ↑↓ 버튼으로 위아래 이동</div>
+              {positionEditMode && <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:5, marginBottom:6 }}>
+                <button onClick={()=>applyPositionPreset('DEFAULT')} style={{ ...buttonBase, background:'#1e293b', border:'1px solid #334155', padding:'6px 4px', fontSize:9 }}>입초-소내-검색-기록</button>
+                <button onClick={()=>applyPositionPreset('RECORD_SECOND')} style={{ ...buttonBase, background:'#1e293b', border:'1px solid #334155', padding:'6px 4px', fontSize:9 }}>입초-기록-검색-소내</button>
+              </div>}
+              <div style={{ display:'grid', gap:5, overflow:'hidden', paddingBottom:0, width:'100%' }}>
+                {displayPositionLabels.map((label, idx) => <div key={`position-${idx}`} data-pos-card="true" style={{ minWidth:0, width:'100%', padding:'6px 6px', borderRadius:8, background:'#111827', border:positionEditMode?'1px solid #f59e0b':'1px solid #334155', userSelect:'none', fontSize:10, fontWeight:900, overflow:'hidden' }}>
+                  <div style={{ display:'grid', gridTemplateColumns:'24px 1fr 26px 26px', alignItems:'center', gap:5 }}>
+                    <span style={{ color:'#94a3b8', fontSize:10, fontWeight:900, textAlign:'center' }}>{idx+1}</span>
                     <input
                       value={label}
                       disabled={!positionEditMode}
@@ -1263,11 +1300,12 @@ function App() {
                       onCompositionStart={() => { composingPosRef.current = true; }}
                       onCompositionEnd={e => { composingPosRef.current = false; setPositionLabelAt(idx, e.currentTarget.value); }}
                       onChange={e=>setPositionLabelAt(idx, e.target.value)}
-                      onBlur={e=>setPositionLabelAt(idx, e.target.value.trim() || getDefaultPositionLabels(division, workerCount, band)[idx] || `근무지${idx+1}`)}
-                      style={{ width:'100%', minWidth:0, background:positionEditMode?'#0b1220':'transparent', color:'#f8fafc', border:positionEditMode?'1px solid #475569':'1px solid transparent', borderRadius:7, padding:'5px 3px', fontSize:12, fontWeight:950, textAlign:'center', outline:'none', WebkitUserSelect:'text', userSelect:'text' }}
+                      onBlur={e=>setPositionLabelAt(idx, e.target.value.trim() || getDefaultPositionLabels(division, workerCount)[idx] || `근무지${idx+1}`)}
+                      style={{ width:'100%', minWidth:0, background:positionEditMode?'#0b1220':'transparent', color:'#f8fafc', border:positionEditMode?'1px solid #475569':'1px solid transparent', borderRadius:7, padding:'5px 6px', fontSize:12, fontWeight:950, textAlign:'center', outline:'none', WebkitUserSelect:'text', userSelect:'text' }}
                     />
+                    <button disabled={!positionEditMode || idx===0} onClick={()=>movePositionSlot(idx,-1)} style={{ ...buttonBase, padding:'5px 0', fontSize:11, background:'#1e293b', opacity:positionEditMode && idx>0?1:.35 }}>↑</button>
+                    <button disabled={!positionEditMode || idx===workerCount-1} onClick={()=>movePositionSlot(idx,1)} style={{ ...buttonBase, padding:'5px 0', fontSize:11, background:'#1e293b', opacity:positionEditMode && idx<workerCount-1?1:.35 }}>↓</button>
                   </div>
-                  <div style={{ marginTop:2, color:'#64748b', fontSize:8, fontWeight:800 }}>{idx+1}번째</div>
                 </div>)}
               </div>
             </div>}
@@ -1277,7 +1315,7 @@ function App() {
                 <div style={{ color:'#f8fafc', fontSize:12, fontWeight:950 }}>근무별순서</div>
                 <button disabled={!editMode} onClick={() => setCOrderEditMode(v => !v)} style={{ ...buttonBase, opacity:editMode?1:.45, background:cOrderEditMode?'#059669':'#334155', padding:'4px 6px', fontSize:10 }}>{cOrderEditMode ? '완료' : '수정'}</button>
               </div>
-              <div style={{ fontSize:9, color:'#64748b', margin:'5px 0 7px' }}>N/A/D 기준순서를 설정합니다. 실제 배치는 휴무를 건너뛰며 근무일마다 자동 회전됩니다.</div>
+              <div style={{ fontSize:9, color:'#64748b', margin:'5px 0 7px' }}>필요 시 N/A/D별 기준순서를 세부 조정합니다. 기본 배치는 근무지순서 기준으로 계산됩니다.</div>
               <div style={{ display:'grid', gap:6 }}>
                 {(() => {
                   const normalizedOrders = normalizeShiftOrders(shiftOrders, division, workerCount);
