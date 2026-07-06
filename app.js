@@ -531,8 +531,9 @@ function App() {
   const positions = POSITIONS_BY_DIV_COUNT[division][workerCount];
   const displayPositionLabels = normalizePositionLabels(positionLabels, division, workerCount);
   const isABDOnePlant = division === '1발전' && ['A반','B반','D반'].includes(band);
-  const visiblePositionLabels = isABDOnePlant && workerCount === 4
-    ? ['입초', '소내', '검색', '기록']
+  const isCOnePlant = division === '1발전' && band === 'C반';
+  const visiblePositionLabels = workerCount === 4
+    ? (isABDOnePlant ? ['입초', '소내', '검색', '기록'] : (isCOnePlant ? ['입초', '기록', '검색', '소내'] : displayPositionLabels))
     : displayPositionLabels;
   const yearOptions = Array.from({ length: 6 }, (_, i) => 2023 + i);
   const monthOptions = Array.from({ length: 12 }, (_, i) => i + 1);
