@@ -1,5 +1,5 @@
 const { useState, useEffect, useRef, useCallback } = React;
-const APP_VERSION = "5.4.2-mobile-position-ui";
+const APP_VERSION = "5.4.5-position-order-fix";
 // ver5.0: 파일 분리(index.html / app.js / firebase.js / styles.css), ver4.9 기능 포함
 
 
@@ -278,13 +278,33 @@ function getDefaultShiftOrders(division, count) {
   return getIdentityShiftOrders(count);
 }
 
-function getDefaultPositionLabels(division, count) {
-  return POSITIONS_BY_DIV_COUNT[division][count].map(p => p.replace(/\(.*\)/, ""));
+// A/B/D반 1발전의 기본 표시 순서에서 "소내"와 "기록"의 위치만 서로 바꿉니다.
+// 주의: POSITIONS_BY_DIV_COUNT(실제 근무자 배치 계산에 쓰이는 원본 배열)는 전혀 건드리지 않고,
+// 화면에 보여지는 순서(positionLabels)만 바꾸는 것이라 근무자 자동배치 로직에는 영향이 없습니다.
+const SWAPPED_SONAE_GIROK_BANDS = ["A반", "B반", "D반"];
+function getDefaultPositionLabels(division, count, band) {
+  const base = POSITIONS_BY_DIV_COUNT[division][count].map(p => p.replace(/\(.*\)/, ""));
+  if (division === "1발전" && SWAPPED_SONAE_GIROK_BANDS.includes(band)) {
+    const idxGirok = base.indexOf("기록");
+    const idxSonae = base.indexOf("소내");
+    if (idxGirok !== -1 && idxSonae !== -1) {
+      const swapped = [...base];
+      swapped[idxGirok] = "소내";
+      swapped[idxSonae] = "기록";
+      return swapped;
+    }
+  }
+  return base;
 }
 
-function normalizePositionLabels(labels, division, count) {
-  const defaults = getDefaultPositionLabels(division, count);
-  const result = Array.isArray(labels) ? labels.slice(0, count).map(v => String(v ?? "").trim()) : [];
+function normalizePositionLabels(labels, division, count, band) {
+  const defaults = getDefaultPositionLabels(division, count, band);
+  const legacyDefaults = POSITIONS_BY_DIV_COUNT[division][count].map(p => p.replace(/\(.*\)/, ""));
+  let result = Array.isArray(labels) ? labels.slice(0, count).map(v => String(v ?? "").trim()) : [];
+  // 예전에 저장된 값이 없거나, 예전 기본 순서 그대로였다면 새 기본 순서(소내/기록 교체)로 1회 업그레이드합니다.
+  // 이미 직접 순서를 바꿔서 저장한 경우(legacyDefaults와 다름)는 그대로 존중하고 건드리지 않습니다.
+  const matchesLegacyDefault = result.length === count && result.every((v, i) => v === legacyDefaults[i]);
+  if (!result.length || matchesLegacyDefault) result = [...defaults];
   while (result.length < count) result.push(defaults[result.length] || `포지션${result.length + 1}`);
   return result.map((v, i) => v || defaults[i] || `포지션${i + 1}`);
 }
@@ -294,7 +314,7 @@ function normalizeRemoteData(data, band, division) {
   let nextNames = Array.isArray(data?.names) ? data.names.slice(0, count).map(v => String(v ?? "")) : DEFAULT_NAMES[count];
   while (nextNames.length < count) nextNames.push(DEFAULT_NAMES[count][nextNames.length] || "");
   const nextOrders = normalizeShiftOrders(data?.shiftOrders, division, count);
-  const nextPositionLabels = normalizePositionLabels(data?.positionLabels, division, count);
+  const nextPositionLabels = normalizePositionLabels(data?.positionLabels, division, count, band);
   return { band, division, workerCount: count, names: nextNames, shiftOrders: nextOrders, positionLabels: nextPositionLabels };
 }
 
@@ -442,7 +462,7 @@ function App() {
   const [names, setNames] = useState(DEFAULT_NAMES[4]);
   const [inputNames, setInputNames] = useState(DEFAULT_NAMES[4]);
   const [shiftOrders, setShiftOrders] = useState(getDefaultShiftOrders(initDivision, 4));
-  const [positionLabels, setPositionLabels] = useState(getDefaultPositionLabels(initDivision, 4));
+  const [positionLabels, setPositionLabels] = useState(getDefaultPositionLabels(initDivision, 4, initBand));
   const [schedule, setSchedule] = useState(() => generateSchedule(DEFAULT_NAMES[4], today.getFullYear(), today.getMonth()+1, initDivision, 4, getDefaultShiftOrders(initDivision, 4), initBand));
   const [syncStatus, setSyncStatus] = useState('Firebase 연결 준비중');
   const [isLoaded, setIsLoaded] = useState(false);
@@ -499,6 +519,7 @@ function App() {
   const [workSettingOpen, setWorkSettingOpen] = useState(false);
   const draggingPosRef = useRef(null);
   const positionRailRef = useRef(null);
+  const composingPosRef = useRef(false);
   const [draggingPosIndex, setDraggingPosIndex] = useState(null);
   const draggingOrderRef = useRef(null);
   const [draggingOrder, setDraggingOrder] = useState(null);
@@ -508,7 +529,7 @@ function App() {
   const saveTimerRef = useRef(null);
 
   const positions = POSITIONS_BY_DIV_COUNT[division][workerCount];
-  const displayPositionLabels = normalizePositionLabels(positionLabels, division, workerCount);
+  const displayPositionLabels = normalizePositionLabels(positionLabels, division, workerCount, band);
   const yearOptions = Array.from({ length: 6 }, (_, i) => 2023 + i);
   const monthOptions = Array.from({ length: 12 }, (_, i) => i + 1);
   const todayDay = today.getFullYear() === selectedYear && today.getMonth()+1 === selectedMonth ? today.getDate() : null;
@@ -607,7 +628,7 @@ function App() {
         }
         const normalized = sourceData
           ? normalizeRemoteData(sourceData, profileBand, profileDivision)
-          : { band: profileBand, division: profileDivision, workerCount:4, names:DEFAULT_NAMES[4], shiftOrders:getDefaultShiftOrders(profileDivision,4), positionLabels:getDefaultPositionLabels(profileDivision,4) };
+          : { band: profileBand, division: profileDivision, workerCount:4, names:DEFAULT_NAMES[4], shiftOrders:getDefaultShiftOrders(profileDivision,4), positionLabels:getDefaultPositionLabels(profileDivision,4,profileBand) };
         setProfileRemoteData(normalized);
       });
     };
@@ -664,7 +685,7 @@ function App() {
         }
         const normalized = sourceData
           ? normalizeRemoteData(sourceData, band, division)
-          : { band, division, workerCount:4, names:DEFAULT_NAMES[4], shiftOrders:getDefaultShiftOrders(division,4), positionLabels:getDefaultPositionLabels(division,4) };
+          : { band, division, workerCount:4, names:DEFAULT_NAMES[4], shiftOrders:getDefaultShiftOrders(division,4), positionLabels:getDefaultPositionLabels(division,4,band) };
         const core = makeSavableCore(normalized);
         lastRemoteCoreRef.current = data ? JSON.stringify(core) : '';
         applyingRemoteRef.current = true;
@@ -872,14 +893,14 @@ function App() {
       ? normalizeRemoteData(sourceData, manualForm.band, manualForm.division)
       : (manualForm.band === band && manualForm.division === division
           ? { band, division, workerCount, names, shiftOrders, positionLabels }
-          : { band: manualForm.band, division: manualForm.division, workerCount:4, names:DEFAULT_NAMES[4], shiftOrders:getDefaultShiftOrders(manualForm.division,4), positionLabels:getDefaultPositionLabels(manualForm.division,4) });
+          : { band: manualForm.band, division: manualForm.division, workerCount:4, names:DEFAULT_NAMES[4], shiftOrders:getDefaultShiftOrders(manualForm.division,4), positionLabels:getDefaultPositionLabels(manualForm.division,4,manualForm.band) });
     let existingOverrides = {};
     try {
       if (window.firebaseDB?.read) existingOverrides = await window.firebaseDB.read(getManualOverridePath(y, m, manualForm.band, manualForm.division)) || {};
     } catch {}
     const sc = generateSchedule(normalized.names, y, m, manualForm.division, normalized.workerCount, normalized.shiftOrders, manualForm.band, existingOverrides);
     const row = sc.find(item => item.day === d);
-    const labels = normalizePositionLabels(normalized.positionLabels, manualForm.division, normalized.workerCount);
+    const labels = normalizePositionLabels(normalized.positionLabels, manualForm.division, normalized.workerCount, manualForm.band);
     const posKeys = POSITIONS_BY_DIV_COUNT[manualForm.division][normalized.workerCount];
     const nextNames = labels.map((label, idx) => {
       const key = posKeys.find(p => cleanLabel(p) === cleanLabel(label)) || posKeys[idx];
@@ -969,7 +990,7 @@ function App() {
     setWorkerNamesDirty(true);
     if (nextNames.every(Boolean) && new Set(nextNames.map(v => String(v).trim())).size === count) setNames(nextNames.map(v => String(v).trim()));
     setShiftOrders(getDefaultShiftOrders(division, count));
-    setPositionLabels(getDefaultPositionLabels(division, count));
+    setPositionLabels(getDefaultPositionLabels(division, count, band));
   };
 
   const updateAdvancedSetting = (targetBand, key, value) => {
@@ -1028,7 +1049,7 @@ function App() {
   const movePositionToIndex = (from, to) => {
     if (!positionEditMode) return;
     setPositionLabels(prev => {
-      const arr = normalizePositionLabels(prev, division, workerCount);
+      const arr = normalizePositionLabels(prev, division, workerCount, band);
       const safeTo = Math.max(0, Math.min(arr.length - 1, to));
       if (from === safeTo) return arr;
       const [picked] = arr.splice(from, 1);
@@ -1040,8 +1061,8 @@ function App() {
 
   const setPositionLabelAt = (idx, value) => {
     setPositionLabels(prev => {
-      const arr = normalizePositionLabels(prev, division, workerCount);
-      arr[idx] = String(value || '').trimStart();
+      const arr = normalizePositionLabels(prev, division, workerCount, band);
+      arr[idx] = String(value ?? '');
       setDirtyStatus(true);
       return [...arr];
     });
@@ -1125,7 +1146,7 @@ function App() {
     if (!row || row.shift === '휴') return { name: profileDisplayName || personalName, band: profileBand, division: profileDivision, shift: '휴', position: '휴무', status: '휴무', note: '오늘은 휴무입니다.' };
     const targetName = profileDisplayName || personalName;
     let foundLabel = '';
-    const labels = normalizePositionLabels(profileRemoteData.positionLabels, profileDivision, profileRemoteData.workerCount);
+    const labels = normalizePositionLabels(profileRemoteData.positionLabels, profileDivision, profileRemoteData.workerCount, profileBand);
     for (const label of labels) {
       const key = POSITIONS_BY_DIV_COUNT[profileDivision][profileRemoteData.workerCount].find(p => cleanLabel(p) === cleanLabel(label)) || label;
       if (row.assignment?.[key] === targetName) { foundLabel = cleanLabel(label); break; }
@@ -1138,8 +1159,8 @@ function App() {
   const gridCols = `82px 42px ${displayPositionLabels.map(() => '1fr').join(' ')}`;
 
   return (
-    <div style={{ minHeight:'100vh', background:'linear-gradient(135deg,#0f172a 0%,#1e293b 100%)', fontFamily:"'Segoe UI','Apple SD Gothic Neo',sans-serif", color:'#e2e8f0', padding:'12px 10px' }}>
-      <div style={{ maxWidth:430, margin:'0 auto', width:'100%' }}>
+    <div style={{ minHeight:'100vh', background:'linear-gradient(135deg,#0f172a 0%,#1e293b 100%)', fontFamily:"'Segoe UI','Apple SD Gothic Neo',sans-serif", color:'#e2e8f0', padding:'10px 8px' }}>
+      <div style={{ maxWidth:430, margin:'0 auto', width:'100%', overflow:'hidden' }}>
         <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', gap:10, marginBottom:14 }}>
           <div style={{ display:'flex', alignItems:'center', gap:10 }}>
             <img src="./icon-192.png" style={{ width:42, height:42, borderRadius:11 }} />
@@ -1197,49 +1218,56 @@ function App() {
           </div>
         </div>}
 
-        <div style={{ background:'#111827', border:'1px solid #334155', borderRadius:12, padding:'9px 10px', marginBottom:10 }}>
-          <button onClick={() => setWorkSettingOpen(v => !v)} style={{ width:'100%', border:'none', background:'transparent', color:'#f8fafc', fontSize:14, fontWeight:950, cursor:'pointer', display:'flex', alignItems:'center', justifyContent:'space-between', padding:0 }}>
+        <div style={{ background:'#111827', border:'1px solid #334155', borderRadius:12, padding:'8px 8px', marginBottom:10, overflow:'hidden' }}>
+          <button onClick={() => setWorkSettingOpen(v => !v)} style={{ width:'100%', border:'none', background:'transparent', color:'#f8fafc', fontSize:13, fontWeight:950, cursor:'pointer', display:'flex', alignItems:'center', justifyContent:'space-between', padding:0 }}>
             <span>근무지설정</span>
             <span style={{ color:'#94a3b8', fontSize:14 }}>{workSettingOpen ? '▾' : '▸'}</span>
           </button>
 
-          {workSettingOpen && <div style={{ marginTop:9, display:'grid', gap:8 }}>
-            <div style={{ background:'#0f172a', border:'1px solid #334155', borderRadius:10, padding:10 }}>
+          {workSettingOpen && <div style={{ marginTop:8, display:'grid', gap:7, width:'100%', overflow:'hidden' }}>
+            <div style={{ background:'#0f172a', border:'1px solid #334155', borderRadius:10, padding:8, width:'100%', overflow:'hidden' }}>
               <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', gap:8, marginBottom:8 }}>
                 <div>
-                  <div style={{ fontSize:13, fontWeight:900 }}>근무자 선택</div>
-                  <div style={{ fontSize:10, color:'#64748b' }}>{band} 직원 DB만 표시 · 중복 선택 방지</div>
+                  <div style={{ fontSize:12, fontWeight:900 }}>근무자 선택</div>
+                  <div style={{ fontSize:9, color:'#64748b' }}>{band} 직원 DB만 표시 · 중복 선택 방지</div>
                 </div>
                 {workerNamesDirty && <span style={{ fontSize:10, fontWeight:950, color:'#fbbf24', background:'rgba(251,191,36,.12)', border:'1px solid rgba(251,191,36,.35)', borderRadius:999, padding:'4px 7px' }}>변경됨</span>}
               </div>
-              <div style={{ display:'grid', gridTemplateColumns:'repeat(2,minmax(0,1fr))', gap:6 }}>
-                {inputNames.map((name, idx) => <select key={idx} value={name} disabled={!editMode} onChange={e=>setWorkerNameAt(idx,e.target.value)} style={{ ...selectStyle, padding:'7px 9px', fontSize:12 }}>
+              <div style={{ display:'grid', gridTemplateColumns:'repeat(2,minmax(0,1fr))', gap:5, width:'100%' }}>
+                {inputNames.map((name, idx) => <select key={idx} value={name} disabled={!editMode} onChange={e=>setWorkerNameAt(idx,e.target.value)} style={{ ...selectStyle, padding:'6px 7px', fontSize:11 }}>
                   <option value="">근무자 {idx+1}</option>
                   {getWorkerOptions(idx).map(emp => <option key={emp.id} value={emp.displayName || emp.name}>{emp.displayName || emp.name}</option>)}
                 </select>)}
               </div>
-              <button disabled={!editMode} onClick={saveWorkerNames} style={{ ...buttonBase, opacity:editMode?1:.45, marginTop:8, width:'100%', background:'linear-gradient(135deg,#0ea5e9,#2563eb)', padding:'8px 10px', fontSize:12 }}>근무자 명단 저장</button>
+              <button disabled={!editMode} onClick={saveWorkerNames} style={{ ...buttonBase, opacity:editMode?1:.45, marginTop:7, width:'100%', background:'linear-gradient(135deg,#0ea5e9,#2563eb)', padding:'7px 8px', fontSize:11 }}>근무자 명단 저장</button>
             </div>
 
-            {currentAdvanced.positionOrderEnabled && <div style={{ background:'#0f172a', border:'1px solid #334155', borderRadius:10, padding:'8px 8px', overflow:'hidden' }}>
+            {currentAdvanced.positionOrderEnabled && <div style={{ background:'#0f172a', border:'1px solid #334155', borderRadius:10, padding:'7px 7px', overflow:'hidden', width:'100%' }}>
               <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:8 }}>
-                <div style={{ color:'#f8fafc', fontSize:12, fontWeight:950 }}>근무지순서/명칭</div>
-                <button disabled={!editMode} onClick={() => setPositionEditMode(v => !v)} style={{ ...buttonBase, opacity:editMode?1:.45, background:positionEditMode?'#059669':'#334155', padding:'4px 7px', fontSize:10 }}>{positionEditMode ? '완료' : '수정'}</button>
+                <div style={{ color:'#f8fafc', fontSize:11, fontWeight:950 }}>근무지순서/명칭</div>
+                <button disabled={!editMode} onClick={() => setPositionEditMode(v => !v)} style={{ ...buttonBase, opacity:editMode?1:.45, background:positionEditMode?'#059669':'#334155', padding:'4px 6px', fontSize:10 }}>{positionEditMode ? '완료' : '수정'}</button>
               </div>
-              <div style={{ fontSize:9, color:'#64748b', margin:'5px 0 7px', lineHeight:1.35 }}>수정 시 텍스트 변경 가능 · ↔ 손잡이로 좌우 이동</div>
-              <div ref={positionRailRef} onPointerMove={handlePositionMove} onPointerUp={endPositionDrag} onPointerCancel={endPositionDrag} style={{ display:'flex', flexWrap:'wrap', gap:6, overflowX:'visible', paddingBottom:0 }}>
-                {displayPositionLabels.map((label, idx) => <div key={`${idx}-${label}`} data-pos-card="true" style={{ minWidth:0, flex:'1 1 calc(50% - 3px)', maxWidth:'calc(50% - 3px)', textAlign:'center', padding:'7px 7px', borderRadius:9, background:draggingPosIndex===idx?'#334155':'#111827', border:positionEditMode?'1px solid #f59e0b':'1px solid #334155', touchAction:'none', userSelect:'none', fontSize:11, fontWeight:900 }}>
-                  <div style={{ display:'grid', gridTemplateColumns:'22px 1fr', alignItems:'center', gap:5 }}>
-                    <span onPointerDown={e=>startPositionDrag(e, idx)} style={{ color:positionEditMode?'#fbbf24':'#64748b', fontSize:11, cursor:positionEditMode?'grab':'default', padding:'5px 2px' }}>{positionEditMode?'↔':'·'}</span>
+              <div style={{ fontSize:8, color:'#64748b', margin:'4px 0 6px', lineHeight:1.3 }}>수정 시 텍스트 변경 가능 · ↔ 손잡이로 좌우 이동</div>
+              <div ref={positionRailRef} onPointerMove={handlePositionMove} onPointerUp={endPositionDrag} onPointerCancel={endPositionDrag} style={{ display:'grid', gridTemplateColumns:'repeat(2,minmax(0,1fr))', gap:5, overflow:'hidden', paddingBottom:0, width:'100%' }}>
+                {displayPositionLabels.map((label, idx) => <div key={`position-${idx}`} data-pos-card="true" style={{ minWidth:0, width:'100%', textAlign:'center', padding:'6px 6px', borderRadius:8, background:draggingPosIndex===idx?'#334155':'#111827', border:positionEditMode?'1px solid #f59e0b':'1px solid #334155', touchAction:'pan-y', userSelect:'none', fontSize:10, fontWeight:900, overflow:'hidden' }}>
+                  <div style={{ display:'grid', gridTemplateColumns:'18px 1fr', alignItems:'center', gap:4 }}>
+                    <span onPointerDown={e=>startPositionDrag(e, idx)} style={{ color:positionEditMode?'#fbbf24':'#64748b', fontSize:10, cursor:positionEditMode?'grab':'default', padding:'4px 1px', touchAction:'none' }}>{positionEditMode?'↔':'·'}</span>
                     <input
                       value={label}
                       disabled={!positionEditMode}
+                      autoComplete="off"
+                      autoCorrect="off"
+                      autoCapitalize="off"
+                      spellCheck={false}
+                      inputMode="text"
+                      onCompositionStart={() => { composingPosRef.current = true; }}
+                      onCompositionEnd={e => { composingPosRef.current = false; setPositionLabelAt(idx, e.currentTarget.value); }}
                       onChange={e=>setPositionLabelAt(idx, e.target.value)}
-                      onBlur={e=>setPositionLabelAt(idx, e.target.value.trim() || getDefaultPositionLabels(division, workerCount)[idx] || `근무지${idx+1}`)}
-                      style={{ width:'100%', minWidth:0, background:positionEditMode?'#0b1220':'transparent', color:'#f8fafc', border:positionEditMode?'1px solid #475569':'1px solid transparent', borderRadius:7, padding:'6px 4px', fontSize:13, fontWeight:950, textAlign:'center', outline:'none' }}
+                      onBlur={e=>setPositionLabelAt(idx, e.target.value.trim() || getDefaultPositionLabels(division, workerCount, band)[idx] || `근무지${idx+1}`)}
+                      style={{ width:'100%', minWidth:0, background:positionEditMode?'#0b1220':'transparent', color:'#f8fafc', border:positionEditMode?'1px solid #475569':'1px solid transparent', borderRadius:7, padding:'5px 3px', fontSize:12, fontWeight:950, textAlign:'center', outline:'none', WebkitUserSelect:'text', userSelect:'text' }}
                     />
                   </div>
-                  <div style={{ marginTop:3, color:'#64748b', fontSize:9, fontWeight:800 }}>{idx+1}번째</div>
+                  <div style={{ marginTop:2, color:'#64748b', fontSize:8, fontWeight:800 }}>{idx+1}번째</div>
                 </div>)}
               </div>
             </div>}
@@ -1247,7 +1275,7 @@ function App() {
             {currentAdvanced.shiftOrderEnabled && <div style={{ background:'#0f172a', border:'1px solid #334155', borderRadius:10, padding:'8px 9px' }}>
               <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:8 }}>
                 <div style={{ color:'#f8fafc', fontSize:12, fontWeight:950 }}>근무별순서</div>
-                <button disabled={!editMode} onClick={() => setCOrderEditMode(v => !v)} style={{ ...buttonBase, opacity:editMode?1:.45, background:cOrderEditMode?'#059669':'#334155', padding:'4px 7px', fontSize:10 }}>{cOrderEditMode ? '완료' : '수정'}</button>
+                <button disabled={!editMode} onClick={() => setCOrderEditMode(v => !v)} style={{ ...buttonBase, opacity:editMode?1:.45, background:cOrderEditMode?'#059669':'#334155', padding:'4px 6px', fontSize:10 }}>{cOrderEditMode ? '완료' : '수정'}</button>
               </div>
               <div style={{ fontSize:9, color:'#64748b', margin:'5px 0 7px' }}>N/A/D 기준순서를 설정합니다. 실제 배치는 휴무를 건너뛰며 근무일마다 자동 회전됩니다.</div>
               <div style={{ display:'grid', gap:6 }}>
@@ -1263,7 +1291,7 @@ function App() {
                     return <div key={sh} style={{ background:'#111827', border:'1px solid #334155', borderRadius:8, padding:6 }}>
                       <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', gap:6, marginBottom:5 }}>
                         <div style={{ fontSize:10, fontWeight:950, color }}>{label}</div>
-                        <button disabled={!cOrderEditMode} onClick={()=>rotateShiftOrder(sh)} style={{ ...buttonBase, background:cOrderEditMode?'#2563eb':'#334155', opacity:cOrderEditMode?1:.45, padding:'4px 7px', fontSize:10 }}>↻ 회전</button>
+                        <button disabled={!cOrderEditMode} onClick={()=>rotateShiftOrder(sh)} style={{ ...buttonBase, background:cOrderEditMode?'#2563eb':'#334155', opacity:cOrderEditMode?1:.45, padding:'4px 6px', fontSize:10 }}>↻ 회전</button>
                       </div>
                       <div onPointerMove={e=>handleShiftOrderMove(e, sh)} onPointerUp={endShiftOrderDrag} onPointerCancel={endShiftOrderDrag} style={{ display:'flex', gap:5, overflowX:'auto', paddingBottom:2 }}>
                         {order.map((nameIdx, idx) => <div key={`${sh}-${nameIdx}-${idx}`} data-order-card="true" onPointerDown={e=>startShiftOrderDrag(e, sh, idx)} style={{ minWidth:50, flex:'0 0 auto', textAlign:'center', padding:'5px 7px', borderRadius:999, background:draggingOrder?.shift===sh && draggingOrder?.idx===idx ? '#334155' : '#1e293b', border:cOrderEditMode?'1px solid #f59e0b':'1px solid #475569', cursor:cOrderEditMode?'grab':'default', touchAction:'none', userSelect:'none', fontSize:10, fontWeight:950 }}>
@@ -1307,7 +1335,7 @@ function App() {
 
         {savedToast && <div style={{ position:'fixed', left:'50%', bottom:22, transform:'translateX(-50%)', zIndex:1200, background:'#052e16', border:'1px solid #16a34a', color:'#dcfce7', borderRadius:999, padding:'9px 14px', fontSize:13, fontWeight:950, boxShadow:'0 10px 30px rgba(0,0,0,.35)' }}>🟢 저장완료</div>}
 
-        {settingsOpen && <div style={{ position:'fixed', inset:0, background:'rgba(2,6,23,.78)', zIndex:999, display:'flex', alignItems:'center', justifyContent:'center', padding:14 }}>
+        {settingsOpen && <div style={{ position:'fixed', inset:0, background:'rgba(2,6,23,.78)', zIndex:999, display:'flex', alignItems:'center', justifyContent:'center', padding:10 }}>
           <div style={{ width:'min(430px,100%)', maxHeight:'86vh', overflow:'auto', background:'#0f172a', border:'1px solid #334155', borderRadius:18, padding:14, boxShadow:'0 20px 80px rgba(0,0,0,.45)' }}>
             <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:12 }}>
               <div style={{ fontSize:20, fontWeight:950 }}>설정</div>
