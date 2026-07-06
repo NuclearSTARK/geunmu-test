@@ -1,5 +1,5 @@
 const { useState, useEffect, useRef, useCallback } = React;
-const APP_VERSION = "7.0.0-engine-rebuild";
+const APP_VERSION = "7.0.1-engine-separated";
 // ver5.0: 파일 분리(index.html / app.js / firebase.js / styles.css), ver4.9 기능 포함
 
 
@@ -253,37 +253,61 @@ function normalizeManualOrderNames(values, fallbackNames, count) {
 }
 
 
-// ── v7.0 근무순서 엔진 연결 ─────────────────────────────
-// 실제 근무 로직은 engine/workLogic.js에 분리했습니다.
-// app.js는 UI/Firebase 데이터만 넘기고, 엔진 결과만 받아 화면에 표시합니다.
+// ── v6.0 근무순서 엔진 분리 ─────────────────────────────
+// UI/Firebase와 분리된 순수 계산 함수입니다. 앱 화면에는 노출하지 않습니다.
+function rotationEngineABD({ names, shiftOrders, workerCount, targetDate, division, band }) {
+  const normalizedOrders = normalizeShiftOrders(shiftOrders, division, workerCount);
+  const cycleIndexOrder = getCycleOrder(normalizedOrders, workerCount);
+  const baseOrder = getDisplayOrderNames(cycleIndexOrder, names, workerCount);
+  const rotationCount = countWorkDaysFromBase(targetDate, division, band, null);
+  return rotateNamesRightBy(baseOrder, rotationCount);
+}
+
+function rotationEngineC({ names, shiftOrders, workerCount, targetDate, division, band, shift }) {
+  const normalizedOrders = normalizeShiftOrders(shiftOrders, division, workerCount);
+  const baseShiftOrders = {
+    N: getDisplayOrderNames(normalizedOrders.N, names, workerCount),
+    A: getDisplayOrderNames(normalizedOrders.A, names, workerCount),
+    D: getDisplayOrderNames(normalizedOrders.D, names, workerCount),
+  };
+  const baseOrder = baseShiftOrders[shift] || getDisplayOrderNames(getCycleOrder(normalizedOrders, workerCount), names, workerCount);
+  const rotationCount = countWorkDaysFromBase(targetDate, division, band, shift);
+  return rotateNamesRightBy(baseOrder, rotationCount);
+}
+
 function getWorkerOrderForDate({ names, shiftOrders, workerCount, targetDate, division, band, shift }) {
-  if (!window.SeulPoliceWorkLogic || typeof window.SeulPoliceWorkLogic.buildWorkerOrder !== "function") {
-    console.error("근무 로직 엔진이 로드되지 않았습니다. engine/workLogic.js를 확인하세요.");
-    return names;
+  // A/B/D반: 전체 근무일 엔진. C반: A/D/N 근무별 독립 엔진.
+  if (band === "C반") {
+    return rotationEngineC({ names, shiftOrders, workerCount, targetDate, division, band, shift });
   }
-  return window.SeulPoliceWorkLogic.buildWorkerOrder({
-    names,
-    shiftOrders,
-    workerCount,
-    targetDate,
-    division,
-    band,
-    shift,
-    getShiftForDate,
-  });
+  return rotationEngineABD({ names, shiftOrders, workerCount, targetDate, division, band });
+}
+
+function getDisplayLabelsForSchedule(band, division, count, customPositionLabels) {
+  const labels = normalizePositionLabels(customPositionLabels, division, count);
+  if (count === 4 && division === '1발전' && ['A반','B반','D반'].includes(band)) return ['입초', '소내', '검색', '기록'];
+  if (count === 4 && division === '1발전' && band === 'C반') return ['입초', '기록', '검색', '소내'];
+  return labels;
+}
+
+function getPositionKeyFromDisplayLabel(label, positions, displayLabels) {
+  const cleaned = cleanPositionName(label);
+  const matched = positions.find(p => cleanPositionName(p) === cleaned);
+  if (matched) return matched;
+  const idx = displayLabels.findIndex(v => cleanPositionName(v) === cleaned);
+  return positions[idx >= 0 ? idx : 0] || positions[0];
 }
 
 function generateSchedule(names, year, month, division, workerCount, shiftOrders, band = "C반", manualOverrides = {}, customPositionLabels = null) {
   if (names.length !== workerCount) return [];
   const positions = POSITIONS_BY_DIV_COUNT[division][workerCount];
-  const displayLabels = normalizePositionLabels(customPositionLabels, division, workerCount);
+  const displayLabels = getDisplayLabelsForSchedule(band, division, workerCount, customPositionLabels);
   const days = getDaysInMonth(year, month);
   const wc = workerCount;
   const normalizedOrders = normalizeShiftOrders(shiftOrders, division, wc);
+  const cycleOrder = getCycleOrder(normalizedOrders, wc);
 
-  // v6.0: 근무순서 계산은 rotationEngineABD / rotationEngineC로 완전 분리했습니다.
-  // 수동 날짜 override 기능은 운영에서 제외했으므로 근무표 계산에는 사용하지 않습니다.
-  const overrides = {};
+  const engine = window.SeulPoliceWorkEngine;
 
   return Array.from({ length: days }, (_, i) => {
     const day = i + 1;
@@ -294,27 +318,41 @@ function generateSchedule(names, year, month, division, workerCount, shiftOrders
 
     if (shift === "휴") return { day, dow, shift, assignment: null, isRed, holiday };
 
-    const targetDate = new Date(year, month - 1, day);
-    const dayNamesOrder = getWorkerOrderForDate({
-      names,
-      shiftOrders: normalizedOrders,
-      workerCount: wc,
-      targetDate,
-      division,
-      band,
-      shift,
-    });
+    let displayOrderNames;
+    if (engine && typeof engine.generateDisplayOrder === 'function') {
+      displayOrderNames = engine.generateDisplayOrder({
+        year,
+        month,
+        day,
+        band,
+        division,
+        shift,
+        workerCount: wc,
+        names,
+        workerOrder: cycleOrder,
+        getShiftForDate,
+      });
+    } else {
+      // 안전 fallback: 검증된 오른쪽 회전만 사용
+      const targetDate = new Date(year, month - 1, day);
+      const count = countWorkDaysFromBase(targetDate, division, band, band === 'C반' ? shift : null);
+      const baseOrder = getDisplayOrderNames(cycleOrder, names, wc);
+      displayOrderNames = rotateNamesRightBy(baseOrder, count);
+    }
 
     const assignment = {};
-    positions.forEach((pos, posIdx) => {
-      const label = displayLabels[posIdx] || pos;
-      const canonicalIdx = getCanonicalPositionIndex(label, posIdx, wc);
-      assignment[pos] = dayNamesOrder[canonicalIdx] || "";
+    displayLabels.forEach((label, idx) => {
+      const key = getPositionKeyFromDisplayLabel(label, positions, displayLabels);
+      assignment[key] = displayOrderNames[idx] || "";
     });
 
-    return { day, dow, shift, assignment, isRed, holiday, manualOverride: Boolean(overrides[day]) };
+    // 혹시 표시되지 않는 포지션 키가 있으면 빈 값으로 채워 렌더링 방어
+    positions.forEach((pos) => { if (!(pos in assignment)) assignment[pos] = ""; });
+
+    return { day, dow, shift, assignment, isRed, holiday, manualOverride: false };
   });
 }
+
 // ── 색상 ─────────────────────────────────────────────────
 const SHIFT_COLORS = {
   N: { bg: "#1a56db", text: "#fff" },
