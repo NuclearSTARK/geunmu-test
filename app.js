@@ -1,5 +1,5 @@
 const { useState, useEffect, useRef, useCallback } = React;
-const APP_VERSION = "5.5.1-position-label-display-fix";
+const APP_VERSION = "5.5.3-patrol-settings";
 // ver5.0: 파일 분리(index.html / app.js / firebase.js / styles.css), ver4.9 기능 포함
 
 
@@ -499,6 +499,8 @@ function App() {
   const [employeeForm, setEmployeeForm] = useState({ name:'', band:'A반', outputName:'' });
   const [globalNotice, setGlobalNotice] = useState({ text:'', enabled:false, urgent:false });
   const [noticeForm, setNoticeForm] = useState({ text:'', enabled:false, urgent:false });
+  const [patrolSettings, setPatrolSettings] = useState({});
+  const [patrolForm, setPatrolForm] = useState({ band:initBand, division:initDivision, weekdayA:'기록', holidayA:'입초', night:['기록'] });
   const [adminBandOpen, setAdminBandOpen] = useState('');
   const defaultAdvancedSettings = {
     'A반': { positionOrderEnabled:true, shiftOrderEnabled:false },
@@ -545,7 +547,24 @@ function App() {
   const getEmployeeDisplayName = (emp) => String(emp.outputName || emp.name || '').trim();
   const cleanLabel = (value) => String(value || '').replace(/\(.*\)/, '').trim();
   const isWeekendOrHoliday = (day) => day.dow === '토' || day.dow === '일' || day.holiday;
+  const patrolSettingKey = (b, d) => `${b}-${d}`;
+  const getDefaultPatrolSetting = (b, d) => {
+    if (b === 'C반' && d === '1발전') return { weekdayA:'소내', holidayA:'검색', night:['소내','기록'] };
+    if (b === 'C반' && d === '2발전') return { weekdayA:'기록', holidayA:'입초', night:['소내','기록'] };
+    return { weekdayA:'기록', holidayA:'입초', night:['기록'] };
+  };
+  const normalizePatrolSetting = (raw, b, d) => {
+    const fallback = getDefaultPatrolSetting(b, d);
+    const night = Array.isArray(raw?.night) && raw.night.length ? raw.night.map(cleanLabel).filter(Boolean) : fallback.night;
+    return {
+      weekdayA: cleanLabel(raw?.weekdayA || fallback.weekdayA),
+      holidayA: cleanLabel(raw?.holidayA || fallback.holidayA),
+      night: night.length ? night : fallback.night,
+    };
+  };
   const currentAdvanced = advancedSettings[band] || defaultAdvancedSettings[band] || { positionOrderEnabled:true, shiftOrderEnabled:false };
+  const getPatrolSettingFor = (b, d) => normalizePatrolSetting(patrolSettings[patrolSettingKey(b, d)], b, d);
+  const patrolPositionOptions = normalizePositionLabels(getDefaultPositionLabels(patrolForm.division, workerCount), patrolForm.division, workerCount).map(cleanLabel);
 
   useEffect(() => {
     let unsubscribe = null;
@@ -601,6 +620,29 @@ function App() {
     attach();
     return () => { cancelled = true; if (typeof unsubscribe === 'function') unsubscribe(); };
   }, []);
+
+  useEffect(() => {
+    let unsubscribe = null;
+    let cancelled = false;
+    const attach = () => {
+      if (cancelled) return;
+      if (!window.firebaseDB) { setTimeout(attach, 200); return; }
+      unsubscribe = window.firebaseDB.listen('settings/patrolSettings', data => {
+        if (cancelled) return;
+        setPatrolSettings(data || {});
+      });
+    };
+    attach();
+    return () => { cancelled = true; if (typeof unsubscribe === 'function') unsubscribe(); };
+  }, []);
+
+  useEffect(() => {
+    const next = getPatrolSettingFor(patrolForm.band, patrolForm.division);
+    setPatrolForm(f => {
+      if (f.weekdayA === next.weekdayA && f.holidayA === next.holidayA && JSON.stringify(f.night) === JSON.stringify(next.night)) return f;
+      return { ...f, ...next };
+    });
+  }, [patrolForm.band, patrolForm.division, patrolSettings]);
 
   useEffect(() => {
     const on = () => setIsOnline(true);
@@ -1059,25 +1101,49 @@ function App() {
   const getPatrolInfo = useCallback((day, label) => {
     if (!day.assignment || day.shift === '휴') return null;
     const l = cleanLabel(label);
-    const weekend = isWeekendOrHoliday(day);
-    if (band === 'C반') {
-      if (day.shift === 'N' && (l === '기록' || l === '소내')) return { mark:'🚔' };
-      if (day.shift === 'A') {
-        const target = division === '2발전' ? (weekend ? '입초' : '기록') : (weekend ? '소내' : '기록');
-        return l === target ? { mark:'🚔' } : null;
-      }
-      return null;
+    const setting = getPatrolSettingFor(band, division);
+    if (day.shift === 'A') {
+      const target = isWeekendOrHoliday(day) ? setting.holidayA : setting.weekdayA;
+      return l === cleanLabel(target) ? { mark:'🚔' } : null;
     }
-    if (band === 'A반') {
-      if (day.shift === 'N') return l === '기록' ? { mark:'🚔' } : null;
-      if (day.shift === 'A') return l === (weekend ? '소내' : '입초') ? { mark:'🚔' } : null;
-    }
-    if ((band === 'B반' || band === 'D반')) {
-      if (day.shift === 'N') return l === '기록' ? { mark:'🚔' } : null;
-      if (day.shift === 'A') return l === (weekend ? '소내' : '입초') ? { mark:'🚔' } : null;
+    if (day.shift === 'N') {
+      return setting.night.map(cleanLabel).includes(l) ? { mark:'🚔' } : null;
     }
     return null;
-  }, [band, division]);
+  }, [band, division, patrolSettings, positionLabels, workerCount]);
+
+  const savePatrolSettings = async () => {
+    const key = patrolSettingKey(patrolForm.band, patrolForm.division);
+    const payload = {
+      ...patrolSettings,
+      [key]: {
+        weekdayA: cleanLabel(patrolForm.weekdayA),
+        holidayA: cleanLabel(patrolForm.holidayA),
+        night: (patrolForm.night || []).map(cleanLabel).filter(Boolean),
+        updatedAt: new Date().toISOString(),
+      }
+    };
+    setPatrolSettings(payload);
+    try {
+      await window.firebaseDB?.save('settings/patrolSettings', payload);
+      setSavedToast(true);
+      setTimeout(() => setSavedToast(false), 1200);
+    } catch (err) {
+      console.error('순찰설정 저장 실패:', err);
+      alert('순찰설정 저장에 실패했어요. Firebase 연결을 확인해주세요.');
+    }
+  };
+
+  const toggleNightPatrolTarget = (target) => {
+    const clean = cleanLabel(target);
+    setPatrolForm(f => {
+      const current = (f.night || []).map(cleanLabel);
+      const exists = current.includes(clean);
+      const next = exists ? current.filter(v => v !== clean) : [...current, clean];
+      return { ...f, night: next.length ? next : [clean] };
+    });
+  };
+
 
   const movePositionToIndex = (from, to) => {
     if (!positionEditMode) return;
@@ -1463,6 +1529,44 @@ function App() {
                       </div>}
                     </div>;
                   })}
+                </div>
+
+                <div style={{ background:'#111827', border:'1px solid #334155', borderRadius:14, padding:12 }}>
+                  <div style={{ fontWeight:950, marginBottom:10 }}>🚔 순찰설정</div>
+                  <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:8, marginBottom:10 }}>
+                    <div>
+                      <div style={{ fontSize:11, color:'#94a3b8', fontWeight:900, marginBottom:5 }}>반 선택</div>
+                      <select value={patrolForm.band} onChange={e=>setPatrolForm(f=>({ ...f, band:e.target.value }))} style={{ ...selectStyle, width:'100%' }}>{EMPLOYEE_BANDS.map(b=><option key={b}>{b}</option>)}</select>
+                    </div>
+                    <div>
+                      <div style={{ fontSize:11, color:'#94a3b8', fontWeight:900, marginBottom:5 }}>발전소 선택</div>
+                      <select value={patrolForm.division} onChange={e=>setPatrolForm(f=>({ ...f, division:e.target.value }))} style={{ ...selectStyle, width:'100%' }}>{['1발전','2발전'].map(d=><option key={d}>{d}</option>)}</select>
+                    </div>
+                  </div>
+                  <div style={{ display:'grid', gap:9 }}>
+                    <label style={{ display:'grid', gap:5 }}>
+                      <span style={{ fontSize:12, color:'#cbd5e1', fontWeight:950 }}>평일 A근무 순찰자</span>
+                      <select value={patrolForm.weekdayA} onChange={e=>setPatrolForm(f=>({ ...f, weekdayA:e.target.value }))} style={{ ...selectStyle, width:'100%' }}>{patrolPositionOptions.map(pos=><option key={pos}>{pos}</option>)}</select>
+                    </label>
+                    <label style={{ display:'grid', gap:5 }}>
+                      <span style={{ fontSize:12, color:'#cbd5e1', fontWeight:950 }}>주말/공휴일 A근무 순찰자</span>
+                      <select value={patrolForm.holidayA} onChange={e=>setPatrolForm(f=>({ ...f, holidayA:e.target.value }))} style={{ ...selectStyle, width:'100%' }}>{patrolPositionOptions.map(pos=><option key={pos}>{pos}</option>)}</select>
+                    </label>
+                    <div>
+                      <div style={{ fontSize:12, color:'#cbd5e1', fontWeight:950, marginBottom:6 }}>N근무 순찰자 <span style={{ color:'#94a3b8', fontWeight:800 }}>(1명 기본 · 2명 이상 체크 가능)</span></div>
+                      <div style={{ display:'grid', gridTemplateColumns:'repeat(2,1fr)', gap:7 }}>
+                        {patrolPositionOptions.map(pos => {
+                          const checked = (patrolForm.night || []).map(cleanLabel).includes(cleanLabel(pos));
+                          return <label key={pos} style={{ display:'flex', alignItems:'center', gap:7, background:checked?'rgba(37,99,235,.22)':'#0f172a', border:`1px solid ${checked?'#2563eb':'#334155'}`, borderRadius:10, padding:'9px 10px', fontSize:12, fontWeight:950 }}>
+                            <input type="checkbox" checked={checked} onChange={()=>toggleNightPatrolTarget(pos)} />
+                            <span>{pos}</span>
+                          </label>;
+                        })}
+                      </div>
+                    </div>
+                    <button onClick={savePatrolSettings} style={{ ...buttonBase, background:'linear-gradient(135deg,#0ea5e9,#2563eb)', padding:'10px 12px', width:'100%' }}>순찰설정 저장</button>
+                    <div style={{ fontSize:10, color:'#94a3b8', lineHeight:1.45 }}>반·발전소별로 따로 저장됩니다. 저장 후 표의 🚔 순찰자 표시가 바로 반영됩니다.</div>
+                  </div>
                 </div>
 
                 <div style={{ background:'#111827', border:'1px solid #334155', borderRadius:14, padding:12 }}>
