@@ -1,5 +1,5 @@
 const { useState, useEffect, useRef, useCallback } = React;
-const APP_VERSION = "6.1.0-continuous-order-engine";
+const APP_VERSION = "6.0.1-monthly-reset-fix";
 // ver5.0: 파일 분리(index.html / app.js / firebase.js / styles.css), ver4.9 기능 포함
 
 
@@ -197,11 +197,17 @@ function rotateNamesRightBy(order, steps) {
   return [...arr.slice(len - n), ...arr.slice(0, len - n)];
 }
 
-const ORDER_ENGINE_BASE_DATE = new Date(2026, 6, 1); // 2026-07-01: 검증 완료된 기준 월
+const ORDER_ENGINE_BASE_DATE = new Date(2026, 6, 1); // 예전 고정 기준일(하위호환 fallback 전용, 실제 계산엔 매달 1일을 사용)
 
-function countWorkDaysFromBase(targetDate, division, band, shiftFilter = null) {
+// v6.0.1: 기준일을 고정된 2026-07-01로 두면 8월/9월... 로 갈수록
+// "그 달에 새로 입력한 근무자 순서"가 아니라 7월부터 계속 이어온 회전값이 적용되어
+// 겉보기엔 이어지지만 실제로 그 달 첫 근무일에 입력한 순서와 어긋나 보이는 문제가 있었습니다.
+// 그래서 기준일을 "근무표를 생성하는 그 달의 1일"로 매달 새로 잡습니다.
+// (휴무로 시작하는 달이면 1일부터 세되, 휴무일은 카운트에서 자동 제외되므로
+//  자연스럽게 그 달의 "첫 근무일"에 rotationCount=0이 적용됩니다.)
+function countWorkDaysFromBase(targetDate, division, band, shiftFilter = null, baseDate = ORDER_ENGINE_BASE_DATE) {
   const target = new Date(targetDate.getFullYear(), targetDate.getMonth(), targetDate.getDate());
-  const base = new Date(ORDER_ENGINE_BASE_DATE.getFullYear(), ORDER_ENGINE_BASE_DATE.getMonth(), ORDER_ENGINE_BASE_DATE.getDate());
+  const base = new Date(baseDate.getFullYear(), baseDate.getMonth(), baseDate.getDate());
   if (target.getTime() === base.getTime()) return 0;
 
   let count = 0;
@@ -219,6 +225,7 @@ function countWorkDaysFromBase(targetDate, division, band, shiftFilter = null) {
   }
   return -count;
 }
+
 
 const CANONICAL_POSITION_ORDER = {
   4: ["입초", "소내", "검색", "기록"],
@@ -253,24 +260,17 @@ function normalizeManualOrderNames(values, fallbackNames, count) {
 }
 
 
-// ── v6.1 연속 근무순서 엔진 ─────────────────────────────
-// 핵심 원칙:
-// 1) 순서와 사람을 분리합니다. 엔진은 1/2/3/4 순번만 회전하고, UI에서 월별 근무자 이름을 매핑합니다.
-// 2) A/B/D반은 전체 근무일 기준으로만 회전합니다. A/D/N 근무 종류는 카운트에 영향을 주지 않습니다.
-// 3) C반은 A/D/N 근무별로 각각 독립 회전합니다.
-// 4) 휴무일은 회전 카운트에서 제외합니다.
-// 5) 회전 방향은 검증된 방식인 1234 → 4123 → 3412 → 2341 로 고정합니다.
-// 6) 기준일은 2026-07-01이며, 월/연도가 바뀌어도 기준일 이후 근무일 카운트로 계속 이어집니다.
+// ── v6.0 근무순서 엔진 분리 ─────────────────────────────
 // UI/Firebase와 분리된 순수 계산 함수입니다. 앱 화면에는 노출하지 않습니다.
-function rotationEngineABD({ names, shiftOrders, workerCount, targetDate, division, band }) {
+function rotationEngineABD({ names, shiftOrders, workerCount, targetDate, division, band, monthBaseDate }) {
   const normalizedOrders = normalizeShiftOrders(shiftOrders, division, workerCount);
   const cycleIndexOrder = getCycleOrder(normalizedOrders, workerCount);
   const baseOrder = getDisplayOrderNames(cycleIndexOrder, names, workerCount);
-  const rotationCount = countWorkDaysFromBase(targetDate, division, band, null);
+  const rotationCount = countWorkDaysFromBase(targetDate, division, band, null, monthBaseDate);
   return rotateNamesRightBy(baseOrder, rotationCount);
 }
 
-function rotationEngineC({ names, shiftOrders, workerCount, targetDate, division, band, shift }) {
+function rotationEngineC({ names, shiftOrders, workerCount, targetDate, division, band, shift, monthBaseDate }) {
   const normalizedOrders = normalizeShiftOrders(shiftOrders, division, workerCount);
   const baseShiftOrders = {
     N: getDisplayOrderNames(normalizedOrders.N, names, workerCount),
@@ -278,17 +278,19 @@ function rotationEngineC({ names, shiftOrders, workerCount, targetDate, division
     D: getDisplayOrderNames(normalizedOrders.D, names, workerCount),
   };
   const baseOrder = baseShiftOrders[shift] || getDisplayOrderNames(getCycleOrder(normalizedOrders, workerCount), names, workerCount);
-  const rotationCount = countWorkDaysFromBase(targetDate, division, band, shift);
+  const rotationCount = countWorkDaysFromBase(targetDate, division, band, shift, monthBaseDate);
   return rotateNamesRightBy(baseOrder, rotationCount);
 }
 
-function getWorkerOrderForDate({ names, shiftOrders, workerCount, targetDate, division, band, shift }) {
+function getWorkerOrderForDate({ names, shiftOrders, workerCount, targetDate, division, band, shift, monthBaseDate }) {
   // A/B/D반: 전체 근무일 엔진. C반: A/D/N 근무별 독립 엔진.
+  // monthBaseDate: 그 달 1일 - 매달 이 날짜를 기준으로 rotationCount를 다시 0부터 셉니다.
   if (band === "C반") {
-    return rotationEngineC({ names, shiftOrders, workerCount, targetDate, division, band, shift });
+    return rotationEngineC({ names, shiftOrders, workerCount, targetDate, division, band, shift, monthBaseDate });
   }
-  return rotationEngineABD({ names, shiftOrders, workerCount, targetDate, division, band });
+  return rotationEngineABD({ names, shiftOrders, workerCount, targetDate, division, band, monthBaseDate });
 }
+
 
 function generateSchedule(names, year, month, division, workerCount, shiftOrders, band = "C반", manualOverrides = {}, customPositionLabels = null) {
   if (names.length !== workerCount) return [];
@@ -298,9 +300,11 @@ function generateSchedule(names, year, month, division, workerCount, shiftOrders
   const wc = workerCount;
   const normalizedOrders = normalizeShiftOrders(shiftOrders, division, wc);
 
-  // v6.1: 근무순서 계산은 rotationEngineABD / rotationEngineC로 완전 분리했습니다.
+  // v6.0: 근무순서 계산은 rotationEngineABD / rotationEngineC로 완전 분리했습니다.
   // 수동 날짜 override 기능은 운영에서 제외했으므로 근무표 계산에는 사용하지 않습니다.
   const overrides = {};
+  // v6.0.1: 기준일을 그 달 1일로 매달 새로 잡습니다. (7월 이후에도 계속 정확하도록)
+  const monthBaseDate = new Date(year, month - 1, 1);
 
   return Array.from({ length: days }, (_, i) => {
     const day = i + 1;
@@ -320,6 +324,7 @@ function generateSchedule(names, year, month, division, workerCount, shiftOrders
       division,
       band,
       shift,
+      monthBaseDate,
     });
 
     const assignment = {};
