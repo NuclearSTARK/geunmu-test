@@ -1,5 +1,5 @@
 const { useState, useEffect, useRef, useCallback } = React;
-const APP_VERSION = "5.5.7-a1-worker-override-clear";
+const APP_VERSION = "6.0.0-engine-refactor";
 // ver5.0: 파일 분리(index.html / app.js / firebase.js / styles.css), ver4.9 기능 포함
 
 
@@ -188,6 +188,38 @@ function rotateNamesRight(order) {
   return [arr[arr.length - 1], ...arr.slice(0, arr.length - 1)];
 }
 
+function rotateNamesRightBy(order, steps) {
+  const arr = Array.isArray(order) ? order.filter(Boolean) : [];
+  if (arr.length <= 1) return arr;
+  const len = arr.length;
+  const n = ((Number(steps || 0) % len) + len) % len;
+  if (n === 0) return [...arr];
+  return [...arr.slice(len - n), ...arr.slice(0, len - n)];
+}
+
+const ORDER_ENGINE_BASE_DATE = new Date(2026, 6, 1); // 2026-07-01: 검증 완료된 기준 월
+
+function countWorkDaysFromBase(targetDate, division, band, shiftFilter = null) {
+  const target = new Date(targetDate.getFullYear(), targetDate.getMonth(), targetDate.getDate());
+  const base = new Date(ORDER_ENGINE_BASE_DATE.getFullYear(), ORDER_ENGINE_BASE_DATE.getMonth(), ORDER_ENGINE_BASE_DATE.getDate());
+  if (target.getTime() === base.getTime()) return 0;
+
+  let count = 0;
+  if (target > base) {
+    for (let d = new Date(base); d < target; d.setDate(d.getDate() + 1)) {
+      const sh = getShiftForDate(d.getFullYear(), d.getMonth() + 1, d.getDate(), division, band);
+      if (sh !== "휴" && (!shiftFilter || sh === shiftFilter)) count += 1;
+    }
+    return count;
+  }
+
+  for (let d = new Date(target); d < base; d.setDate(d.getDate() + 1)) {
+    const sh = getShiftForDate(d.getFullYear(), d.getMonth() + 1, d.getDate(), division, band);
+    if (sh !== "휴" && (!shiftFilter || sh === shiftFilter)) count += 1;
+  }
+  return -count;
+}
+
 const CANONICAL_POSITION_ORDER = {
   4: ["입초", "소내", "검색", "기록"],
   5: ["입초", "소내", "검색", "기록", "출검"],
@@ -220,6 +252,37 @@ function normalizeManualOrderNames(values, fallbackNames, count) {
   return result.slice(0, count);
 }
 
+
+// ── v6.0 근무순서 엔진 분리 ─────────────────────────────
+// UI/Firebase와 분리된 순수 계산 함수입니다. 앱 화면에는 노출하지 않습니다.
+function rotationEngineABD({ names, shiftOrders, workerCount, targetDate, division, band }) {
+  const normalizedOrders = normalizeShiftOrders(shiftOrders, division, workerCount);
+  const cycleIndexOrder = getCycleOrder(normalizedOrders, workerCount);
+  const baseOrder = getDisplayOrderNames(cycleIndexOrder, names, workerCount);
+  const rotationCount = countWorkDaysFromBase(targetDate, division, band, null);
+  return rotateNamesRightBy(baseOrder, rotationCount);
+}
+
+function rotationEngineC({ names, shiftOrders, workerCount, targetDate, division, band, shift }) {
+  const normalizedOrders = normalizeShiftOrders(shiftOrders, division, workerCount);
+  const baseShiftOrders = {
+    N: getDisplayOrderNames(normalizedOrders.N, names, workerCount),
+    A: getDisplayOrderNames(normalizedOrders.A, names, workerCount),
+    D: getDisplayOrderNames(normalizedOrders.D, names, workerCount),
+  };
+  const baseOrder = baseShiftOrders[shift] || getDisplayOrderNames(getCycleOrder(normalizedOrders, workerCount), names, workerCount);
+  const rotationCount = countWorkDaysFromBase(targetDate, division, band, shift);
+  return rotateNamesRightBy(baseOrder, rotationCount);
+}
+
+function getWorkerOrderForDate({ names, shiftOrders, workerCount, targetDate, division, band, shift }) {
+  // A/B/D반: 전체 근무일 엔진. C반: A/D/N 근무별 독립 엔진.
+  if (band === "C반") {
+    return rotationEngineC({ names, shiftOrders, workerCount, targetDate, division, band, shift });
+  }
+  return rotationEngineABD({ names, shiftOrders, workerCount, targetDate, division, band });
+}
+
 function generateSchedule(names, year, month, division, workerCount, shiftOrders, band = "C반", manualOverrides = {}, customPositionLabels = null) {
   if (names.length !== workerCount) return [];
   const positions = POSITIONS_BY_DIV_COUNT[division][workerCount];
@@ -228,21 +291,8 @@ function generateSchedule(names, year, month, division, workerCount, shiftOrders
   const wc = workerCount;
   const normalizedOrders = normalizeShiftOrders(shiftOrders, division, wc);
 
-  // v5.5.0 새 근무자 배치 엔진
-  // - 근무자 명단은 월/반/발전별 저장값을 기준으로 사용합니다.
-  // - 매월 첫 근무일은 저장된 순서 그대로 시작합니다.
-  // - 휴무일은 카운트하지 않습니다.
-  // - 근무일마다 마지막 근무자가 맨 앞으로 이동합니다.
-  // - 근무지 순서/명칭은 표시 위치만 바꾸며, 기준 근무지 순서는 [입초, 소내, 검색, 기록]입니다.
-  // 예) 표시순서 [입초,소내,검색,기록] → 1 2 3 4 / 4 1 2 3
-  // 예) 표시순서 [입초,기록,검색,소내] → 1 4 3 2 / 4 3 2 1
-  const cycleIndexOrder = getCycleOrder(normalizedOrders, wc);
-  let rollingNamesOrder = getDisplayOrderNames(cycleIndexOrder, names, wc);
-  // v5.5.7 핵심 수정
-  // 예전 수동 날짜 수정값(manualOverrides)이 남아 있으면 특정 반/발전소, 특히 A반 1발전에서
-  // 관리자 화면에서 근무자를 바꿔도 표가 과거 고정값으로 계속 덮어써지는 문제가 생깁니다.
-  // 현재 수동 날짜 기능은 운영에서 제거하기로 했으므로, 표 생성 시 수동 override를 완전히 무시합니다.
-  // 앞으로 표는 오직 현재 월/반/발전의 저장된 근무자 명단(names)과 근무지 순서(positionLabels)만 기준으로 계산합니다.
+  // v6.0: 근무순서 계산은 rotationEngineABD / rotationEngineC로 완전 분리했습니다.
+  // 수동 날짜 override 기능은 운영에서 제외했으므로 근무표 계산에는 사용하지 않습니다.
   const overrides = {};
 
   return Array.from({ length: days }, (_, i) => {
@@ -254,13 +304,16 @@ function generateSchedule(names, year, month, division, workerCount, shiftOrders
 
     if (shift === "휴") return { day, dow, shift, assignment: null, isRed, holiday };
 
-    const manual = overrides[day];
-    let dayNamesOrder = [...rollingNamesOrder];
-    if (manual && Array.isArray(manual.names) && manual.names.length) {
-      const manualNames = normalizeManualOrderNames(manual.names, rollingNamesOrder, wc);
-      dayNamesOrder = manualNames;
-      if (manual.mode === "basis") rollingNamesOrder = [...manualNames];
-    }
+    const targetDate = new Date(year, month - 1, day);
+    const dayNamesOrder = getWorkerOrderForDate({
+      names,
+      shiftOrders: normalizedOrders,
+      workerCount: wc,
+      targetDate,
+      division,
+      band,
+      shift,
+    });
 
     const assignment = {};
     positions.forEach((pos, posIdx) => {
@@ -269,8 +322,7 @@ function generateSchedule(names, year, month, division, workerCount, shiftOrders
       assignment[pos] = dayNamesOrder[canonicalIdx] || "";
     });
 
-    rollingNamesOrder = rotateNamesRight(rollingNamesOrder);
-    return { day, dow, shift, assignment, isRed, holiday, manualOverride: Boolean(manual) };
+    return { day, dow, shift, assignment, isRed, holiday, manualOverride: Boolean(overrides[day]) };
   });
 }
 // ── 색상 ─────────────────────────────────────────────────
@@ -398,9 +450,7 @@ function saveSetting(data) {
 }
 
 // ── 직원 DB / 관리자모드 ──────────────────────────────────
-// v5.0.2: 우선은 간단한 편집코드 방식입니다.
-// 이후 Firebase Authentication을 붙이면 실제 계정 기반 권한으로 바꿀 예정입니다.
-const ADMIN_EDIT_CODE = "seul2026";
+// v5.6.0: 관리자 암호는 최초 1회 사용자가 직접 설정합니다.
 const EMPLOYEE_BANDS = ["A반","B반","C반","D반"];
 function makeEmployeeId(employees) {
   const nums = Object.keys(employees || {})
@@ -499,6 +549,11 @@ function App() {
   const [personalName, setPersonalName] = useState(personal.name || '');
 
   const [adminCodeInput, setAdminCodeInput] = useState('');
+  const [adminNewCode, setAdminNewCode] = useState('');
+  const [adminNewCodeConfirm, setAdminNewCodeConfirm] = useState('');
+  const [adminChangeCode, setAdminChangeCode] = useState({ current:'', next:'', confirm:'' });
+  const [adminAuth, setAdminAuth] = useState(null);
+  const [adminAuthLoaded, setAdminAuthLoaded] = useState(false);
   const [isAdminMode, setIsAdminMode] = useState(false);
   const [employees, setEmployees] = useState({});
   const [employeeForm, setEmployeeForm] = useState({ name:'', band:'A반', outputName:'' });
@@ -542,7 +597,7 @@ function App() {
   const visiblePositionLabels = workerCount === 4
     ? (isABDOnePlant ? ['입초', '소내', '검색', '기록'] : (isCOnePlant ? ['입초', '기록', '검색', '소내'] : displayPositionLabels))
     : displayPositionLabels;
-  const yearOptions = Array.from({ length: 6 }, (_, i) => 2023 + i);
+  const yearOptions = Array.from({ length: 15 }, (_, i) => 2026 + i);
   const monthOptions = Array.from({ length: 12 }, (_, i) => i + 1);
   const todayDay = today.getFullYear() === selectedYear && today.getMonth()+1 === selectedMonth ? today.getDate() : null;
 
@@ -569,6 +624,23 @@ function App() {
     const getPatrolSettingFor = (b, d) => normalizeSavedPatrolSetting(patrolSettings[patrolSettingKey(b, d)]);
   const getPatrolFormSettingFor = (b, d) => getPatrolSettingFor(b, d) || getDefaultPatrolSetting();
   const patrolPositionOptions = normalizePositionLabels(getDefaultPositionLabels(patrolForm.division, workerCount), patrolForm.division, workerCount).map(cleanLabel);
+
+
+  useEffect(() => {
+    let unsubscribe = null;
+    let cancelled = false;
+    const attach = () => {
+      if (cancelled) return;
+      if (!window.firebaseDB) { setTimeout(attach, 200); return; }
+      unsubscribe = window.firebaseDB.listen('settings/adminAuth', data => {
+        if (cancelled) return;
+        setAdminAuth(data && typeof data === 'object' ? data : null);
+        setAdminAuthLoaded(true);
+      });
+    };
+    attach();
+    return () => { cancelled = true; if (typeof unsubscribe === 'function') unsubscribe(); };
+  }, []);
 
   useEffect(() => {
     let unsubscribe = null;
@@ -844,9 +916,46 @@ function App() {
     setTimeout(() => setSavedToast(false), 1800);
   };
 
+  const cleanAdminCode = (value) => String(value || '').replace(/[^0-9]/g, '').slice(0, 6);
+  const isValidAdminCode = (value) => /^\d{4,6}$/.test(String(value || ''));
+
   const handleAdminLogin = () => {
-    if (adminCodeInput.trim() === ADMIN_EDIT_CODE) { setIsAdminMode(true); setAdminCodeInput(''); }
+    const code = cleanAdminCode(adminCodeInput);
+    if (!adminAuthLoaded) { alert('관리자 암호 정보를 불러오는 중입니다. 잠시 후 다시 시도해주세요.'); return; }
+    if (!adminAuth?.password) { alert('먼저 관리자 암호를 설정해주세요.'); return; }
+    if (code === String(adminAuth.password)) { setIsAdminMode(true); setAdminCodeInput(''); }
     else alert('관리자 암호가 맞지 않아요.');
+  };
+
+  const handleAdminPasswordSetup = async () => {
+    const next = cleanAdminCode(adminNewCode);
+    const confirm = cleanAdminCode(adminNewCodeConfirm);
+    if (!isValidAdminCode(next)) { alert('관리자 암호는 숫자 4~6자리로 설정해주세요.'); return; }
+    if (next !== confirm) { alert('확인 암호가 일치하지 않아요.'); return; }
+    if (!window.firebaseDB?.save) { alert('Firebase 연결 후 다시 시도해주세요.'); return; }
+    const payload = { password: next, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
+    await window.firebaseDB.save('settings/adminAuth', payload);
+    setAdminAuth(payload);
+    setAdminNewCode('');
+    setAdminNewCodeConfirm('');
+    setIsAdminMode(true);
+    setSavedToast(true);
+    setTimeout(() => setSavedToast(false), 1200);
+  };
+
+  const handleAdminPasswordChange = async () => {
+    const current = cleanAdminCode(adminChangeCode.current);
+    const next = cleanAdminCode(adminChangeCode.next);
+    const confirm = cleanAdminCode(adminChangeCode.confirm);
+    if (!adminAuth?.password) { alert('먼저 관리자 암호를 설정해주세요.'); return; }
+    if (current !== String(adminAuth.password)) { alert('현재 암호가 맞지 않아요.'); return; }
+    if (!isValidAdminCode(next)) { alert('새 암호는 숫자 4~6자리로 설정해주세요.'); return; }
+    if (next !== confirm) { alert('새 암호 확인이 일치하지 않아요.'); return; }
+    const payload = { ...(adminAuth || {}), password: next, updatedAt: new Date().toISOString() };
+    await window.firebaseDB?.save('settings/adminAuth', payload);
+    setAdminAuth(payload);
+    setAdminChangeCode({ current:'', next:'', confirm:'' });
+    alert('관리자 암호가 변경되었습니다.');
   };
 
   const handleEmployeeAdd = async () => {
@@ -1320,7 +1429,7 @@ function App() {
     return { name: targetName, band: profileBand, division: profileDivision, shift: row.shift, position: foundLabel || '미배정', status: foundLabel ? '확인됨' : '미배정', note: foundLabel ? '' : '배치표를 생성하거나 근무자명을 확인해주세요.' };
   })();
 
-  const selectStyle = { padding:'8px 12px', background:'#0f172a', border:'1.5px solid #334155', borderRadius:8, color:'#f1f5f9', fontSize:14, fontWeight:800, outline:'none' };
+  const selectStyle = { padding:'8px 12px', background:'#0f172a', border:'1.5px solid #334155', borderRadius:8, color:'#f1f5f9', fontSize:16, fontWeight:800, outline:'none' };
   const buttonBase = { border:'none', borderRadius:8, color:'#fff', fontWeight:900, cursor:'pointer' };
   const gridCols = `82px 42px ${visiblePositionLabels.map(() => '1fr').join(' ')}`;
 
@@ -1387,7 +1496,7 @@ function App() {
         <div style={{ background:'#111827', border:'1px solid #334155', borderRadius:12, padding:'8px 8px', marginBottom:10, overflow:'hidden' }}>
           <button onClick={() => setWorkSettingOpen(v => !v)} style={{ width:'100%', border:'none', background:'transparent', color:'#f8fafc', fontSize:13, fontWeight:950, cursor:'pointer', display:'flex', alignItems:'center', justifyContent:'space-between', padding:0 }}>
             <span>근무지설정</span>
-            <span style={{ color:'#94a3b8', fontSize:14 }}>{workSettingOpen ? '▾' : '▸'}</span>
+            <span style={{ color:'#94a3b8', fontSize:16 }}>{workSettingOpen ? '▾' : '▸'}</span>
           </button>
 
           {workSettingOpen && <div style={{ marginTop:8, display:'grid', gap:7, width:'100%', overflow:'hidden' }}>
@@ -1484,7 +1593,7 @@ function App() {
 
         <div style={{ background:'#1e293b', border:'1px solid #334155', borderRadius:14, overflow:'hidden' }}>
           <div style={{ background:'#0f172a', padding:'11px 14px', borderBottom:'1px solid #334155', display:'flex', justifyContent:'space-between', alignItems:'center' }}>
-            <span style={{ fontWeight:900, fontSize:14 }}>{selectedYear}년 {selectedMonth}월 {band} {division}</span>
+            <span style={{ fontWeight:900, fontSize:16 }}>{selectedYear}년 {selectedMonth}월 {band} {division}</span>
             <span style={{ fontSize:11, color:'#94a3b8' }}>🚔 순찰자 · 🔴 주말/공휴일</span>
           </div>
           <div style={{ display:'grid', gridTemplateColumns:gridCols, background:'#0f172a', borderBottom:'1px solid #334155', padding:'0 10px' }}>
@@ -1556,8 +1665,16 @@ function App() {
 
             {settingsTab === 'admin' && <div>
               {!isAdminMode ? <div style={{ display:'grid', gap:10 }}>
-                <input type="password" value={adminCodeInput} onChange={e=>setAdminCodeInput(e.target.value)} onKeyDown={e=>e.key==='Enter'&&handleAdminLogin()} placeholder="관리자 암호" style={{ ...selectStyle, width:'100%', boxSizing:'border-box' }} />
-                <button onClick={handleAdminLogin} style={{ ...buttonBase, background:'linear-gradient(135deg,#0ea5e9,#2563eb)', padding:'12px 13px', width:'100%' }}>관리자설정 열기</button>
+                {!adminAuthLoaded ? <div style={{ background:'#0f172a', border:'1px solid #334155', borderRadius:12, padding:12, color:'#cbd5e1', fontSize:13, fontWeight:900 }}>관리자 암호 정보를 불러오는 중...</div> : !adminAuth?.password ? <div style={{ display:'grid', gap:10, background:'#0f172a', border:'1px solid #334155', borderRadius:14, padding:12 }}>
+                  <div style={{ fontSize:16, fontWeight:950, color:'#f8fafc' }}>관리자 암호 최초 설정</div>
+                  <div style={{ fontSize:11, color:'#94a3b8', lineHeight:1.5 }}>처음 한 번만 숫자 4~6자리 암호를 설정해주세요. 이후 관리자설정은 이 암호로 들어갑니다.</div>
+                  <input type="password" inputMode="numeric" pattern="[0-9]*" autoComplete="new-password" value={adminNewCode} onChange={e=>setAdminNewCode(cleanAdminCode(e.target.value))} placeholder="새 암호 4~6자리" style={{ ...selectStyle, width:'100%', boxSizing:'border-box', fontSize:16 }} />
+                  <input type="password" inputMode="numeric" pattern="[0-9]*" autoComplete="new-password" value={adminNewCodeConfirm} onChange={e=>setAdminNewCodeConfirm(cleanAdminCode(e.target.value))} onKeyDown={e=>e.key==='Enter'&&handleAdminPasswordSetup()} placeholder="새 암호 확인" style={{ ...selectStyle, width:'100%', boxSizing:'border-box', fontSize:16 }} />
+                  <button onClick={handleAdminPasswordSetup} style={{ ...buttonBase, background:'linear-gradient(135deg,#0ea5e9,#2563eb)', padding:'12px 13px', width:'100%' }}>관리자 암호 설정</button>
+                </div> : <>
+                  <input type="password" inputMode="numeric" pattern="[0-9]*" autoComplete="current-password" value={adminCodeInput} onChange={e=>setAdminCodeInput(cleanAdminCode(e.target.value))} onKeyDown={e=>e.key==='Enter'&&handleAdminLogin()} placeholder="관리자 암호" style={{ ...selectStyle, width:'100%', boxSizing:'border-box', fontSize:16 }} />
+                  <button onClick={handleAdminLogin} style={{ ...buttonBase, background:'linear-gradient(135deg,#0ea5e9,#2563eb)', padding:'12px 13px', width:'100%' }}>관리자설정 열기</button>
+                </>}
               </div> : <div style={{ display:'grid', gap:12 }}>
                 <div style={{ background:'#111827', border:'1px solid #334155', borderRadius:14, overflow:'hidden' }}>
                   <div style={{ padding:'12px 12px', fontWeight:950, fontSize:16, borderBottom:'1px solid #334155' }}>👥 직원 DB 관리</div>
@@ -1587,7 +1704,7 @@ function App() {
                         <button onClick={()=>clearBandEmployees(b)} style={{ border:'none', borderRadius:9, background:'#7f1d1d', color:'#fecaca', padding:'9px 10px', fontSize:12, fontWeight:950, cursor:'pointer', width:'100%' }}>이 반 전체삭제</button>
                         {employeeList.filter(emp=>emp.band===b && emp.active).map(emp => <div key={emp.id} style={{ display:'flex', alignItems:'center', justifyContent:'space-between', gap:10, background:'#0f172a', border:'1px solid #334155', borderRadius:10, padding:'9px 10px' }}>
                           <div style={{ minWidth:0 }}>
-                            <div style={{ fontSize:14, fontWeight:950 }}>{getEmployeeDisplayName(emp)}</div>
+                            <div style={{ fontSize:16, fontWeight:950 }}>{getEmployeeDisplayName(emp)}</div>
                             <div style={{ fontSize:11, color:'#64748b', fontWeight:800 }}>{emp.name}</div>
                           </div>
                           <button onClick={()=>deleteEmployee(emp.id)} style={{ border:'none', background:'#7f1d1d', color:'#fecaca', borderRadius:999, cursor:'pointer', fontWeight:950, width:30, height:30, flex:'0 0 auto' }}>×</button>
@@ -1658,6 +1775,13 @@ function App() {
                   <div style={{ display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:6 }}>{[4,5,6].map(n=><button key={n} onClick={()=>handleWorkerCountChange(n)} style={{ ...buttonBase, height:38, background:workerCount===n?'#2563eb':'#334155' }}>{n}명</button>)}</div>
                 </div>
                 <div style={{ textAlign:'center', color:'#64748b', fontSize:11, fontWeight:800 }}>Seul Police · v{APP_VERSION}</div>
+                <div style={{ background:'#111827', border:'1px solid #334155', borderRadius:14, padding:12, display:'grid', gap:8 }}>
+                  <div style={{ fontWeight:950, fontSize:15, color:'#f8fafc' }}>🔐 관리자 암호 변경</div>
+                  <input type="password" inputMode="numeric" pattern="[0-9]*" value={adminChangeCode.current} onChange={e=>setAdminChangeCode(v=>({...v,current:cleanAdminCode(e.target.value)}))} placeholder="현재 암호" style={{ ...selectStyle, width:'100%', boxSizing:'border-box', fontSize:16 }} />
+                  <input type="password" inputMode="numeric" pattern="[0-9]*" value={adminChangeCode.next} onChange={e=>setAdminChangeCode(v=>({...v,next:cleanAdminCode(e.target.value)}))} placeholder="새 암호 4~6자리" style={{ ...selectStyle, width:'100%', boxSizing:'border-box', fontSize:16 }} />
+                  <input type="password" inputMode="numeric" pattern="[0-9]*" value={adminChangeCode.confirm} onChange={e=>setAdminChangeCode(v=>({...v,confirm:cleanAdminCode(e.target.value)}))} placeholder="새 암호 확인" style={{ ...selectStyle, width:'100%', boxSizing:'border-box', fontSize:16 }} />
+                  <button onClick={handleAdminPasswordChange} style={{ ...buttonBase, background:'#334155', padding:'10px 12px' }}>암호 변경</button>
+                </div>
                 <button onClick={()=>setIsAdminMode(false)} style={{ ...buttonBase, background:'#7f1d1d', padding:'11px 12px' }}>관리자모드 종료</button>
               </div>}
             </div>}          </div>

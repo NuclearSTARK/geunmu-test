@@ -20,3 +20,34 @@
 @media (prefers-reduced-motion: reduce) {
   .notice-marquee { animation: none; padding-left: 12px; min-width: auto; }
 }
+
+/* v5.5.9 mobile input/orientation hardening */
+input, select, textarea, button {
+  font-size: 16px !important;
+}
+html, body {
+  width: 100%;
+  min-height: 100%;
+  overflow-x: hidden;
+  -webkit-text-size-adjust: 100%;
+}
+@media screen and (orientation: landscape) and (max-height: 520px) {
+  body::before {
+    content: "세로모드로 돌려서 사용해주세요";
+    position: fixed;
+    inset: 0;
+    z-index: 999999;
+    background: #0b1225;
+    color: #f8fafc;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    font-size: 22px;
+    font-weight: 900;
+    padding: 24px;
+  }
+  #root {
+    display: none !important;
+  }
+}
