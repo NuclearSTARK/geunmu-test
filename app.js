@@ -1,5 +1,5 @@
 const { useState, useEffect, useRef, useCallback } = React;
-const APP_VERSION = "5.5.4-worker-save-hardfix";
+const APP_VERSION = "5.5.5-patrol-admin-only-cache";
 // ver5.0: 파일 분리(index.html / app.js / firebase.js / styles.css), ver4.9 기능 포함
 
 
@@ -548,22 +548,21 @@ function App() {
   const cleanLabel = (value) => String(value || '').replace(/\(.*\)/, '').trim();
   const isWeekendOrHoliday = (day) => day.dow === '토' || day.dow === '일' || day.holiday;
   const patrolSettingKey = (b, d) => `${b}-${d}`;
-  const getDefaultPatrolSetting = (b, d) => {
-    if (b === 'C반' && d === '1발전') return { weekdayA:'소내', holidayA:'검색', night:['소내','기록'] };
-    if (b === 'C반' && d === '2발전') return { weekdayA:'기록', holidayA:'입초', night:['소내','기록'] };
-    return { weekdayA:'기록', holidayA:'입초', night:['기록'] };
-  };
-  const normalizePatrolSetting = (raw, b, d) => {
-    const fallback = getDefaultPatrolSetting(b, d);
-    const night = Array.isArray(raw?.night) && raw.night.length ? raw.night.map(cleanLabel).filter(Boolean) : fallback.night;
+  // v5.5.5: 순찰자는 코드 하드코딩을 전부 제거하고 관리자설정 저장값만 표에 반영합니다.
+  // 아래 기본값은 '관리자설정 입력 폼'의 초기값으로만 사용되며, 저장 전에는 표에 순찰 표시가 나오지 않습니다.
+  const getDefaultPatrolSetting = () => ({ weekdayA:'기록', holidayA:'입초', night:['기록'] });
+  const normalizeSavedPatrolSetting = (raw) => {
+    if (!raw || typeof raw !== 'object') return null;
+    const night = Array.isArray(raw.night) ? raw.night.map(cleanLabel).filter(Boolean) : [];
     return {
-      weekdayA: cleanLabel(raw?.weekdayA || fallback.weekdayA),
-      holidayA: cleanLabel(raw?.holidayA || fallback.holidayA),
-      night: night.length ? night : fallback.night,
+      weekdayA: cleanLabel(raw.weekdayA),
+      holidayA: cleanLabel(raw.holidayA),
+      night,
     };
   };
   const currentAdvanced = advancedSettings[band] || defaultAdvancedSettings[band] || { positionOrderEnabled:true, shiftOrderEnabled:false };
-  const getPatrolSettingFor = (b, d) => normalizePatrolSetting(patrolSettings[patrolSettingKey(b, d)], b, d);
+    const getPatrolSettingFor = (b, d) => normalizeSavedPatrolSetting(patrolSettings[patrolSettingKey(b, d)]);
+  const getPatrolFormSettingFor = (b, d) => getPatrolSettingFor(b, d) || getDefaultPatrolSetting();
   const patrolPositionOptions = normalizePositionLabels(getDefaultPositionLabels(patrolForm.division, workerCount), patrolForm.division, workerCount).map(cleanLabel);
 
   useEffect(() => {
@@ -637,7 +636,7 @@ function App() {
   }, []);
 
   useEffect(() => {
-    const next = getPatrolSettingFor(patrolForm.band, patrolForm.division);
+    const next = getPatrolFormSettingFor(patrolForm.band, patrolForm.division);
     setPatrolForm(f => {
       if (f.weekdayA === next.weekdayA && f.holidayA === next.holidayA && JSON.stringify(f.night) === JSON.stringify(next.night)) return f;
       return { ...f, ...next };
@@ -1137,6 +1136,7 @@ function App() {
     if (!day.assignment || day.shift === '휴') return null;
     const l = cleanLabel(label);
     const setting = getPatrolSettingFor(band, division);
+    if (!setting) return null;
     if (day.shift === 'A') {
       const target = isWeekendOrHoliday(day) ? setting.holidayA : setting.weekdayA;
       return l === cleanLabel(target) ? { mark:'🚔' } : null;
