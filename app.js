@@ -1006,9 +1006,20 @@ function App() {
   };
 
   const setWorkerNameAt = (idx, value) => {
-    const next = [...inputNames];
+    const next = inputNames.slice(0, workerCount);
+    while (next.length < workerCount) next.push('');
     next[idx] = value;
+
+    // v5.5.6: 근무자 선택값을 inputNames에만 두면 표가 기존 names를 계속 사용해서
+    // 저장 전/후 모두 바뀌지 않는 것처럼 보일 수 있습니다.
+    // 선택 즉시 names와 표 계산까지 같이 갱신합니다. 저장 버튼은 Firebase 확정 저장용입니다.
     setInputNames(next);
+    const valid = next.every(v => String(v || '').trim()) && new Set(next.map(v => String(v || '').trim())).size === workerCount;
+    if (valid) {
+      const trimmed = next.map(v => String(v || '').trim());
+      setNames(trimmed);
+      setSchedule(generateSchedule(trimmed, selectedYear, selectedMonth, division, workerCount, shiftOrders, band, manualOverrides, positionLabels));
+    }
     setWorkerNamesDirty(true);
     setDirtyStatus(true);
   };
@@ -1023,21 +1034,21 @@ function App() {
     // Firebase 리스너/기존 원격값이 다시 덮어써서 "바뀌지 않는" 문제가 생길 수 있습니다.
     // 그래서 저장 버튼을 누르는 순간 월/반/발전 경로에 즉시 저장하고,
     // 표도 새 명단 기준으로 즉시 다시 계산합니다.
-    const identity = getIdentityShiftOrders(workerCount);
+    const nextShiftOrders = normalizeShiftOrders(shiftOrders, division, workerCount);
     const nextCore = makeSavableCore({
       band,
       division,
       workerCount,
       names: trimmed,
-      shiftOrders: identity,
+      shiftOrders: nextShiftOrders,
       positionLabels,
     });
 
     applyingRemoteRef.current = true;
     setInputNames(trimmed);
     setNames(trimmed);
-    setShiftOrders(identity);
-    setSchedule(generateSchedule(trimmed, selectedYear, selectedMonth, division, workerCount, identity, band, manualOverrides, positionLabels));
+    setShiftOrders(nextShiftOrders);
+    setSchedule(generateSchedule(trimmed, selectedYear, selectedMonth, division, workerCount, nextShiftOrders, band, manualOverrides, positionLabels));
     setWorkerNamesDirty(false);
     setDirtyStatus(false);
     setSyncStatus('근무자 명단 저장중...');
@@ -1067,9 +1078,18 @@ function App() {
     if (!editMode) return;
     const nextIdx = idx + dir;
     if (nextIdx < 0 || nextIdx >= workerCount) return;
-    const arr = [...inputNames];
+    const arr = inputNames.slice(0, workerCount);
+    while (arr.length < workerCount) arr.push('');
     [arr[idx], arr[nextIdx]] = [arr[nextIdx], arr[idx]];
+
+    // v5.5.6: 위/아래 이동도 즉시 names와 표에 반영합니다.
     setInputNames(arr);
+    const valid = arr.every(v => String(v || '').trim()) && new Set(arr.map(v => String(v || '').trim())).size === workerCount;
+    if (valid) {
+      const trimmed = arr.map(v => String(v || '').trim());
+      setNames(trimmed);
+      setSchedule(generateSchedule(trimmed, selectedYear, selectedMonth, division, workerCount, shiftOrders, band, manualOverrides, positionLabels));
+    }
     setWorkerNamesDirty(true);
     setDirtyStatus(true);
   };
