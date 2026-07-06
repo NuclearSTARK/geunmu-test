@@ -1,5 +1,5 @@
 const { useState, useEffect, useRef, useCallback } = React;
-const APP_VERSION = "6.0.0-engine-refactor";
+const APP_VERSION = "6.1.0-continuous-order-engine";
 // ver5.0: 파일 분리(index.html / app.js / firebase.js / styles.css), ver4.9 기능 포함
 
 
@@ -253,7 +253,14 @@ function normalizeManualOrderNames(values, fallbackNames, count) {
 }
 
 
-// ── v6.0 근무순서 엔진 분리 ─────────────────────────────
+// ── v6.1 연속 근무순서 엔진 ─────────────────────────────
+// 핵심 원칙:
+// 1) 순서와 사람을 분리합니다. 엔진은 1/2/3/4 순번만 회전하고, UI에서 월별 근무자 이름을 매핑합니다.
+// 2) A/B/D반은 전체 근무일 기준으로만 회전합니다. A/D/N 근무 종류는 카운트에 영향을 주지 않습니다.
+// 3) C반은 A/D/N 근무별로 각각 독립 회전합니다.
+// 4) 휴무일은 회전 카운트에서 제외합니다.
+// 5) 회전 방향은 검증된 방식인 1234 → 4123 → 3412 → 2341 로 고정합니다.
+// 6) 기준일은 2026-07-01이며, 월/연도가 바뀌어도 기준일 이후 근무일 카운트로 계속 이어집니다.
 // UI/Firebase와 분리된 순수 계산 함수입니다. 앱 화면에는 노출하지 않습니다.
 function rotationEngineABD({ names, shiftOrders, workerCount, targetDate, division, band }) {
   const normalizedOrders = normalizeShiftOrders(shiftOrders, division, workerCount);
@@ -291,7 +298,7 @@ function generateSchedule(names, year, month, division, workerCount, shiftOrders
   const wc = workerCount;
   const normalizedOrders = normalizeShiftOrders(shiftOrders, division, wc);
 
-  // v6.0: 근무순서 계산은 rotationEngineABD / rotationEngineC로 완전 분리했습니다.
+  // v6.1: 근무순서 계산은 rotationEngineABD / rotationEngineC로 완전 분리했습니다.
   // 수동 날짜 override 기능은 운영에서 제외했으므로 근무표 계산에는 사용하지 않습니다.
   const overrides = {};
 
