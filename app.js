@@ -1,5 +1,5 @@
 const { useState, useEffect, useRef, useCallback } = React;
-const APP_VERSION = "5.5.5-patrol-admin-only-cache";
+const APP_VERSION = "5.5.7-a1-worker-override-clear";
 // ver5.0: 파일 분리(index.html / app.js / firebase.js / styles.css), ver4.9 기능 포함
 
 
@@ -238,7 +238,12 @@ function generateSchedule(names, year, month, division, workerCount, shiftOrders
   // 예) 표시순서 [입초,기록,검색,소내] → 1 4 3 2 / 4 3 2 1
   const cycleIndexOrder = getCycleOrder(normalizedOrders, wc);
   let rollingNamesOrder = getDisplayOrderNames(cycleIndexOrder, names, wc);
-  const overrides = normalizeManualOverrides(manualOverrides);
+  // v5.5.7 핵심 수정
+  // 예전 수동 날짜 수정값(manualOverrides)이 남아 있으면 특정 반/발전소, 특히 A반 1발전에서
+  // 관리자 화면에서 근무자를 바꿔도 표가 과거 고정값으로 계속 덮어써지는 문제가 생깁니다.
+  // 현재 수동 날짜 기능은 운영에서 제거하기로 했으므로, 표 생성 시 수동 override를 완전히 무시합니다.
+  // 앞으로 표는 오직 현재 월/반/발전의 저장된 근무자 명단(names)과 근무지 순서(positionLabels)만 기준으로 계산합니다.
+  const overrides = {};
 
   return Array.from({ length: days }, (_, i) => {
     const day = i + 1;
@@ -1055,6 +1060,13 @@ function App() {
 
     try {
       pushBackup(makeCurrentCore());
+      // v5.5.7: 해당 월/반/발전의 오래된 수동 수정값이 있으면 A반 1발전처럼 표가 고정될 수 있어 저장 시 함께 비웁니다.
+      try {
+        if (window.firebaseDB?.save) {
+          await window.firebaseDB.save(getManualOverridePath(selectedYear, selectedMonth, band, division), {});
+          setManualOverrides({});
+        }
+      } catch (e) { console.warn('manual override clear skipped', e); }
       await saveSetting({ ...nextCore, year: selectedYear, month: selectedMonth });
       lastRemoteCoreRef.current = JSON.stringify(nextCore);
       const t = formatSavedTime();
