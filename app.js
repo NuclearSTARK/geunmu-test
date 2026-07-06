@@ -1,5 +1,5 @@
 const { useState, useEffect, useRef, useCallback } = React;
-const APP_VERSION = "5.5.3-patrol-settings";
+const APP_VERSION = "5.5.4-worker-save-hardfix";
 // ver5.0: 파일 분리(index.html / app.js / firebase.js / styles.css), ver4.9 기능 포함
 
 
@@ -752,7 +752,7 @@ function App() {
 
   useEffect(() => {
     setSchedule(generateSchedule(names, selectedYear, selectedMonth, division, workerCount, shiftOrders, band, manualOverrides, positionLabels));
-  }, [names, selectedYear, selectedMonth, division, workerCount, shiftOrders, band, manualOverrides]);
+  }, [names, selectedYear, selectedMonth, division, workerCount, shiftOrders, band, manualOverrides, positionLabels]);
 
   const makeCurrentCore = useCallback(() => makeSavableCore({ band, division, workerCount, names, shiftOrders, positionLabels }), [band, division, workerCount, names, shiftOrders, positionLabels]);
 
@@ -1014,19 +1014,54 @@ function App() {
     setDirtyStatus(true);
   };
 
-  const saveWorkerNames = () => {
+  const saveWorkerNames = async () => {
     const trimmed = inputNames.slice(0, workerCount).map(v => String(v || '').trim());
     if (trimmed.some(v => !v)) { alert('근무자를 모두 선택해주세요.'); return; }
     if (new Set(trimmed).size !== workerCount) { alert('중복된 근무자가 있어요.'); return; }
-    // 근무자 명단을 저장할 때 기존 순서값이 새 명단과 섞이지 않도록 기본 순서로 초기화합니다.
-    // 이후 "순서 회전"을 누르면 이 저장된 명단 기준으로만 회전합니다.
+
+    // v5.5.4 핵심 수정
+    // 근무자 선택 저장 시 화면 상태만 바꾸고 자동저장에 맡기면
+    // Firebase 리스너/기존 원격값이 다시 덮어써서 "바뀌지 않는" 문제가 생길 수 있습니다.
+    // 그래서 저장 버튼을 누르는 순간 월/반/발전 경로에 즉시 저장하고,
+    // 표도 새 명단 기준으로 즉시 다시 계산합니다.
     const identity = getIdentityShiftOrders(workerCount);
+    const nextCore = makeSavableCore({
+      band,
+      division,
+      workerCount,
+      names: trimmed,
+      shiftOrders: identity,
+      positionLabels,
+    });
+
+    applyingRemoteRef.current = true;
+    setInputNames(trimmed);
     setNames(trimmed);
     setShiftOrders(identity);
+    setSchedule(generateSchedule(trimmed, selectedYear, selectedMonth, division, workerCount, identity, band, manualOverrides, positionLabels));
     setWorkerNamesDirty(false);
-    setDirtyStatus(true);
-    setSavedToast(true);
-    setTimeout(() => setSavedToast(false), 1400);
+    setDirtyStatus(false);
+    setSyncStatus('근무자 명단 저장중...');
+
+    try {
+      pushBackup(makeCurrentCore());
+      await saveSetting({ ...nextCore, year: selectedYear, month: selectedMonth });
+      lastRemoteCoreRef.current = JSON.stringify(nextCore);
+      const t = formatSavedTime();
+      setLastSavedAt(t);
+      localStorage.setItem('sp_last_saved_at', t);
+      setSyncStatus('근무자 명단 저장 완료');
+      setSavedToast(true);
+      setTimeout(() => setSavedToast(false), 1400);
+      setTimeout(() => setSyncStatus('실시간 연결됨'), 1000);
+    } catch (err) {
+      console.error('근무자 명단 저장 실패', err);
+      setDirtyStatus(true);
+      setSyncStatus('근무자 명단 저장 실패');
+      alert('근무자 명단 저장에 실패했어요. 인터넷 연결을 확인해주세요.');
+    } finally {
+      setTimeout(() => { applyingRemoteRef.current = false; }, 120);
+    }
   };
 
   const moveWorkerSlot = (idx, dir) => {
