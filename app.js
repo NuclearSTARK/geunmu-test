@@ -1,5 +1,5 @@
 const { useState, useEffect, useRef, useCallback } = React;
-const APP_VERSION = "7.0.1-engine-separated";
+const APP_VERSION = "9.0.0-shift-calendar";
 // ver5.0: 파일 분리(index.html / app.js / firebase.js / styles.css), ver4.9 기능 포함
 
 
@@ -32,6 +32,7 @@ const DYNAMIC_HOLIDAYS = {
 
 function isKoreanHoliday(year, month, day) {
   const key = `${String(month).padStart(2,"0")}-${String(day).padStart(2,"0")}`;
+  if (CUSTOM_HOLIDAYS[dateKey(year, month, day)]) return true;
   if (FIXED_HOLIDAYS.includes(key)) return true;
   return (DYNAMIC_HOLIDAYS[year] || []).includes(key);
 }
@@ -52,12 +53,25 @@ const BASE_DATES = {
 // A반 = A근무 2번째, B반 = D근무 1번째, C반 = 휴무, D반 = N근무 3번째
 // C반은 기존과 딱 맞아서 offset 0으로 유지합니다.
 const BAND_CYCLE_OFFSET = { "A반": 6, "B반": 9, "C반": 0, "D반": 3 };
-
+const SHIFT_SYSTEM_PATTERNS = {
+  THREE_SHIFT: ["A","A","A","휴","D","D","D","휴","N","N","N","휴"],
+  TWO_SHIFT_1: ["주","야","비","휴"],
+  TWO_SHIFT_2: ["주","주","휴","야","야","비","휴","휴"],
+};
+let ACTIVE_SHIFT_SYSTEM = { type:"THREE_SHIFT", offsets:{"A반":0,"B반":3,"C반":6,"D반":9} };
+let CUSTOM_HOLIDAYS = {};
+function setActiveShiftSystem(next){ if(next&&SHIFT_SYSTEM_PATTERNS[next.type]) ACTIVE_SHIFT_SYSTEM={type:next.type,offsets:{...ACTIVE_SHIFT_SYSTEM.offsets,...(next.offsets||{})}}; }
+function setCustomHolidayMap(next){ CUSTOM_HOLIDAYS=next&&typeof next==='object'?next:{}; }
+function dateKey(year,month,day){ return `${year}-${String(month).padStart(2,'0')}-${String(day).padStart(2,'0')}`; }
 function getShiftForDate(year, month, day, division, band = "C반") {
-  const base = BASE_DATES[division];
-  const diffDays = Math.round((new Date(year, month-1, day) - base) / 86400000);
-  const offset = BAND_CYCLE_OFFSET[band] ?? 0;
-  return SHIFT_CYCLE[(((diffDays + offset) % 12) + 12) % 12];
+  if(ACTIVE_SHIFT_SYSTEM.type==='THREE_SHIFT'){
+    const base=BASE_DATES[division]; const diffDays=Math.round((new Date(year,month-1,day)-base)/86400000); const offset=BAND_CYCLE_OFFSET[band]??0;
+    return SHIFT_CYCLE[(((diffDays+offset)%12)+12)%12];
+  }
+  const pattern=SHIFT_SYSTEM_PATTERNS[ACTIVE_SHIFT_SYSTEM.type]||SHIFT_SYSTEM_PATTERNS.TWO_SHIFT_1;
+  const diffDays=Math.round((new Date(year,month-1,day)-new Date(2026,6,1))/86400000);
+  const offset=Number(ACTIVE_SHIFT_SYSTEM.offsets?.[band]||0);
+  return pattern[(((diffDays+offset)%pattern.length)+pattern.length)%pattern.length];
 }
 
 // ── 스케줄 생성 ──────────────────────────────────────────
@@ -316,7 +330,7 @@ function generateSchedule(names, year, month, division, workerCount, shiftOrders
     const holiday = isKoreanHoliday(year, month, day);
     const isRed = dow === "토" || dow === "일" || holiday;
 
-    if (shift === "휴") return { day, dow, shift, assignment: null, isRed, holiday };
+    if (shift === "휴" || shift === "비") return { day, dow, shift, assignment: null, isRed, holiday };
 
     let displayOrderNames;
     if (engine && typeof engine.generateDisplayOrder === 'function') {
@@ -358,6 +372,9 @@ const SHIFT_COLORS = {
   N: { bg: "#1a56db", text: "#fff" },
   A: { bg: "#057a55", text: "#fff" },
   D: { bg: "#c27803", text: "#fff" },
+  주: { bg: "#0f9f8f", text: "#fff" },
+  야: { bg: "#2563eb", text: "#fff" },
+  비: { bg: "#475569", text: "#fff" },
 };
 
 const DEFAULT_NAMES = {
@@ -541,6 +558,12 @@ function App() {
   const [division, setDivision] = useState(initDivision);
   const [selectedYear, setSelectedYear] = useState(today.getFullYear());
   const [selectedMonth, setSelectedMonth] = useState(today.getMonth() + 1);
+  const [pageMode, setPageMode] = useState('home');
+  const [calendarMode, setCalendarMode] = useState('personal');
+  const [shiftSystem, setShiftSystem] = useState(() => { try { return JSON.parse(localStorage.getItem('sp_shift_system')||'null') || {type:'THREE_SHIFT',offsets:{'A반':0,'B반':3,'C반':6,'D반':9}}; } catch { return {type:'THREE_SHIFT',offsets:{'A반':0,'B반':3,'C반':6,'D반':9}}; } });
+  const [customHolidays, setCustomHolidays] = useState(() => { try { return JSON.parse(localStorage.getItem('sp_custom_holidays')||'{}'); } catch { return {}; } });
+  const [holidayForm, setHolidayForm] = useState({date:'',name:''});
+  const [adminOpenSection, setAdminOpenSection] = useState('');
   const [workerCount, setWorkerCount] = useState(4);
   const [names, setNames] = useState(DEFAULT_NAMES[4]);
   const [inputNames, setInputNames] = useState(DEFAULT_NAMES[4]);
@@ -653,6 +676,10 @@ function App() {
   const getPatrolFormSettingFor = (b, d) => getPatrolSettingFor(b, d) || getDefaultPatrolSetting();
   const patrolPositionOptions = normalizePositionLabels(getDefaultPositionLabels(patrolForm.division, workerCount), patrolForm.division, workerCount).map(cleanLabel);
 
+
+  useEffect(()=>{ setActiveShiftSystem(shiftSystem); localStorage.setItem('sp_shift_system',JSON.stringify(shiftSystem)); setSchedule(generateSchedule(names,selectedYear,selectedMonth,division,workerCount,shiftOrders,band,manualOverrides,positionLabels)); },[shiftSystem]);
+  useEffect(()=>{ setCustomHolidayMap(customHolidays); localStorage.setItem('sp_custom_holidays',JSON.stringify(customHolidays)); setSchedule(generateSchedule(names,selectedYear,selectedMonth,division,workerCount,shiftOrders,band,manualOverrides,positionLabels)); },[customHolidays]);
+  useEffect(()=>{ let a,b,c=false; const attach=()=>{ if(c)return; if(!window.firebaseDB){setTimeout(attach,250);return;} a=window.firebaseDB.listen('settings/shiftSystem',d=>{if(d?.type)setShiftSystem(d)}); b=window.firebaseDB.listen('settings/customHolidays',d=>{if(d&&typeof d==='object')setCustomHolidays(d)});}; attach(); return()=>{c=true;if(typeof a==='function')a();if(typeof b==='function')b();};},[]);
 
   useEffect(() => {
     let unsubscribe = null;
@@ -1461,6 +1488,16 @@ function App() {
   const buttonBase = { border:'none', borderRadius:8, color:'#fff', fontWeight:900, cursor:'pointer' };
   const gridCols = `82px 42px ${visiblePositionLabels.map(() => '1fr').join(' ')}`;
 
+  const changeMonth=(delta)=>{const d=new Date(selectedYear,selectedMonth-1+delta,1);setSelectedYear(d.getFullYear());setSelectedMonth(d.getMonth()+1);};
+  const shiftSystemLabel=shiftSystem.type==='THREE_SHIFT'?'4조3교대':shiftSystem.type==='TWO_SHIFT_1'?'4조2교대(1주기)':'4조2교대(2주기)';
+  const saveShiftSystem=async()=>{setActiveShiftSystem(shiftSystem);localStorage.setItem('sp_shift_system',JSON.stringify(shiftSystem));await window.firebaseDB?.save('settings/shiftSystem',shiftSystem);setSavedToast(true);setTimeout(()=>setSavedToast(false),1200);};
+  const moveBandCycle=(b,delta)=>{const len=(SHIFT_SYSTEM_PATTERNS[shiftSystem.type]||SHIFT_SYSTEM_PATTERNS.THREE_SHIFT).length;setShiftSystem(v=>({...v,offsets:{...v.offsets,[b]:(((Number(v.offsets?.[b]||0)+delta)%len)+len)%len}}));};
+  const addCustomHoliday=async()=>{if(!holidayForm.date||!holidayForm.name.trim()){alert('날짜와 공휴일명을 입력해주세요.');return;}const next={...customHolidays,[holidayForm.date]:holidayForm.name.trim()};setCustomHolidays(next);setHolidayForm({date:'',name:''});await window.firebaseDB?.save('settings/customHolidays',next);};
+  const removeCustomHoliday=async(key)=>{const next={...customHolidays};delete next[key];setCustomHolidays(next);await window.firebaseDB?.save('settings/customHolidays',next);};
+  const formatShiftShort=(shift)=>shift;
+  const calendarBand=personalBand||band;
+  const calendarDays=Array.from({length:getDaysInMonth(selectedYear,selectedMonth)},(_,i)=>i+1);
+
   return (
     <div style={{ minHeight:'100vh', background:'linear-gradient(135deg,#0f172a 0%,#1e293b 100%)', fontFamily:"'Segoe UI','Apple SD Gothic Neo',sans-serif", color:'#e2e8f0', padding:'10px 8px' }}>
       <div style={{ maxWidth:430, margin:'0 auto', width:'100%', overflow:'hidden' }}>
@@ -1481,9 +1518,11 @@ function App() {
             {dirtyStatus && <span style={{ fontSize:11, fontWeight:950, color:'#fbbf24', background:'rgba(251,191,36,.12)', border:'1px solid rgba(251,191,36,.35)', borderRadius:999, padding:'5px 8px' }}>● 변경됨</span>}
             {lastSavedAt && <span style={{ fontSize:11, fontWeight:850, color:'#94a3b8', background:'#0f172a', border:'1px solid #334155', borderRadius:999, padding:'5px 8px' }}>마지막 저장 {lastSavedAt}</span>}
           </div>
-          <div style={{ display:'flex', gap:6 }}>
-            <button onClick={() => { const now = new Date(); setSelectedYear(now.getFullYear()); setSelectedMonth(now.getMonth()+1); }} style={{ ...buttonBase, background:'#334155', padding:'7px 10px', fontSize:12 }}>📅 오늘</button>
-            <button onClick={() => setEditMode(v=>!v)} style={{ ...buttonBase, background:editMode?'#059669':'#1d4ed8', padding:'7px 10px', fontSize:12 }}>{editMode ? '✔ 저장' : '✏️ 편집'}</button>
+          <div style={{ display:'flex', gap:6, flexWrap:'wrap', justifyContent:'flex-end' }}>
+            <button onClick={()=>setPageMode('home')} style={{ ...buttonBase, background:pageMode==='home'?'#2563eb':'#334155', padding:'7px 10px', fontSize:12 }}>🏠 홈</button>
+            <button onClick={()=>setPageMode('calendar')} style={{ ...buttonBase, background:pageMode==='calendar'?'#2563eb':'#334155', padding:'7px 10px', fontSize:12 }}>📅 교대달력</button>
+            <button onClick={() => { const now = new Date(); setSelectedYear(now.getFullYear()); setSelectedMonth(now.getMonth()+1); }} style={{ ...buttonBase, background:'#334155', padding:'7px 10px', fontSize:12 }}>오늘</button>
+            {pageMode==='home' && <button onClick={() => setEditMode(v=>!v)} style={{ ...buttonBase, background:editMode?'#059669':'#1d4ed8', padding:'7px 10px', fontSize:12 }}>{editMode ? '✔ 저장' : '✏️ 편집'}</button>}
           </div>
         </div>
 
@@ -1510,8 +1549,12 @@ function App() {
           <div style={{ display:'flex', background:'#0f172a', border:'1.5px solid #334155', borderRadius:9, padding:3, gap:2 }}>
             {['1발전','2발전'].map(d => <button key={d} onClick={() => setDivision(d)} style={{ ...buttonBase, padding:'7px 13px', background:division===d?'linear-gradient(135deg,#f59e0b,#f97316)':'transparent', color:division===d?'#fff':'#64748b' }}>{d}</button>)}
           </div>
-          <select value={selectedYear} onChange={e=>setSelectedYear(Number(e.target.value))} style={selectStyle}>{yearOptions.map(y=><option key={y} value={y}>{y}년</option>)}</select>
-          <select value={selectedMonth} onChange={e=>setSelectedMonth(Number(e.target.value))} style={selectStyle}>{monthOptions.map(m=><option key={m} value={m}>{m}월</option>)}</select>
+          <div style={{ display:'flex', alignItems:'center', gap:4, background:'#0f172a', border:'1px solid #334155', borderRadius:9, padding:3 }}>
+            <button onClick={()=>changeMonth(-1)} style={{ ...buttonBase, background:'#1e293b', padding:'7px 9px' }}>‹</button>
+            <select value={selectedYear} onChange={e=>setSelectedYear(Number(e.target.value))} style={{...selectStyle,border:'none'}}>{yearOptions.map(y=><option key={y} value={y}>{y}년</option>)}</select>
+            <select value={selectedMonth} onChange={e=>setSelectedMonth(Number(e.target.value))} style={{...selectStyle,border:'none'}}>{monthOptions.map(m=><option key={m} value={m}>{m}월</option>)}</select>
+            <button onClick={()=>changeMonth(1)} style={{ ...buttonBase, background:'#1e293b', padding:'7px 9px' }}>›</button>
+          </div>
           <span style={{ fontSize:12, color:'#94a3b8', fontWeight:800, padding:'8px 10px', background:'#0f172a', border:'1px solid #334155', borderRadius:8 }}>근무자 {workerCount}명</span>
         </div>
 
@@ -1521,6 +1564,7 @@ function App() {
           </div>
         </div>}
 
+        {pageMode==='home' && <>
         <div style={{ background:'#111827', border:'1px solid #334155', borderRadius:12, padding:'8px 8px', marginBottom:10, overflow:'hidden' }}>
           <button onClick={() => setWorkSettingOpen(v => !v)} style={{ width:'100%', border:'none', background:'transparent', color:'#f8fafc', fontSize:13, fontWeight:950, cursor:'pointer', display:'flex', alignItems:'center', justifyContent:'space-between', padding:0 }}>
             <span>근무지설정</span>
@@ -1549,41 +1593,6 @@ function App() {
               </div>
               <button disabled={!editMode} onClick={saveWorkerNames} style={{ ...buttonBase, opacity:editMode?1:.45, marginTop:7, width:'100%', background:'linear-gradient(135deg,#0ea5e9,#2563eb)', padding:'7px 8px', fontSize:11 }}>근무자 명단 저장</button>
             </div>
-
-            {currentAdvanced.positionOrderEnabled && <div style={{ background:'#0f172a', border:'1px solid #334155', borderRadius:10, padding:'7px 7px', overflow:'hidden', width:'100%' }}>
-              <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:8 }}>
-                <div style={{ color:'#f8fafc', fontSize:11, fontWeight:950 }}>근무지순서/명칭</div>
-                <button disabled={!editMode} onClick={() => setPositionEditMode(v => !v)} style={{ ...buttonBase, opacity:editMode?1:.45, background:positionEditMode?'#059669':'#334155', padding:'4px 6px', fontSize:10 }}>{positionEditMode ? '완료' : '수정'}</button>
-              </div>
-              <div style={{ fontSize:8, color:'#64748b', margin:'4px 0 6px', lineHeight:1.3 }}>텍스트 수정 가능 · ↑↓ 버튼으로 위아래 이동</div>
-              {positionEditMode && <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:5, marginBottom:6 }}>
-                <button onClick={()=>applyPositionPreset('DEFAULT')} style={{ ...buttonBase, background:'#1e293b', border:'1px solid #334155', padding:'6px 4px', fontSize:9 }}>입초-소내-검색-기록</button>
-                <button onClick={()=>applyPositionPreset('RECORD_SECOND')} style={{ ...buttonBase, background:'#1e293b', border:'1px solid #334155', padding:'6px 4px', fontSize:9 }}>입초-기록-검색-소내</button>
-              </div>}
-              <div style={{ display:'grid', gap:5, overflow:'hidden', paddingBottom:0, width:'100%' }}>
-                {visiblePositionLabels.map((label, idx) => <div key={`position-${idx}`} data-pos-card="true" style={{ minWidth:0, width:'100%', padding:'6px 6px', borderRadius:8, background:'#111827', border:positionEditMode?'1px solid #f59e0b':'1px solid #334155', userSelect:'none', fontSize:10, fontWeight:900, overflow:'hidden' }}>
-                  <div style={{ display:'grid', gridTemplateColumns:'24px 1fr 26px 26px', alignItems:'center', gap:5 }}>
-                    <span style={{ color:'#94a3b8', fontSize:10, fontWeight:900, textAlign:'center' }}>{idx+1}</span>
-                    <input
-                      value={label}
-                      disabled={!positionEditMode}
-                      autoComplete="off"
-                      autoCorrect="off"
-                      autoCapitalize="off"
-                      spellCheck={false}
-                      inputMode="text"
-                      onCompositionStart={() => { composingPosRef.current = true; }}
-                      onCompositionEnd={e => { composingPosRef.current = false; setPositionLabelAt(idx, e.currentTarget.value); }}
-                      onChange={e=>setPositionLabelAt(idx, e.target.value)}
-                      onBlur={e=>setPositionLabelAt(idx, e.target.value.trim() || getDefaultPositionLabels(division, workerCount)[idx] || `근무지${idx+1}`)}
-                      style={{ width:'100%', minWidth:0, background:positionEditMode?'#0b1220':'transparent', color:'#f8fafc', border:positionEditMode?'1px solid #475569':'1px solid transparent', borderRadius:7, padding:'5px 6px', fontSize:12, fontWeight:950, textAlign:'center', outline:'none', WebkitUserSelect:'text', userSelect:'text' }}
-                    />
-                    <button disabled={!positionEditMode || idx===0} onClick={()=>movePositionSlot(idx,-1)} style={{ ...buttonBase, padding:'5px 0', fontSize:11, background:'#1e293b', opacity:positionEditMode && idx>0?1:.35 }}>↑</button>
-                    <button disabled={!positionEditMode || idx===workerCount-1} onClick={()=>movePositionSlot(idx,1)} style={{ ...buttonBase, padding:'5px 0', fontSize:11, background:'#1e293b', opacity:positionEditMode && idx<workerCount-1?1:.35 }}>↓</button>
-                  </div>
-                </div>)}
-              </div>
-            </div>}
 
             {currentAdvanced.shiftOrderEnabled && <div style={{ background:'#0f172a', border:'1px solid #334155', borderRadius:10, padding:'8px 9px' }}>
               <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:8 }}>
@@ -1633,7 +1642,7 @@ function App() {
             return <div key={day.day} style={{ display:'grid', gridTemplateColumns:gridCols, borderBottom:idx<schedule.length-1?'1px solid #1e293b':'none', background:isToday?'rgba(37,99,235,.16)':idx%2?'#172032':'transparent', padding:'0 10px', outline:isToday?'2px solid #3b82f6':'none', outlineOffset:-1 }}>
               <div style={{ padding:'9px 4px', display:'flex', alignItems:'center', gap:4 }}><span style={{ fontWeight:900, color:textColor }}>{day.day}</span><span style={{ color:textColor }}>({day.dow})</span>{day.holiday && <span style={{ color:'#ef4444', fontSize:10 }}>★</span>}</div>
               <div style={{ padding:'9px 2px', textAlign:'center' }}>{day.shift !== '휴' ? <span style={{ background:SHIFT_COLORS[day.shift].bg, color:'#fff', borderRadius:5, padding:'2px 7px', fontSize:11, fontWeight:900 }}>{day.shift}</span> : <span style={{ fontSize:11, color:'#475569' }}>휴</span>}</div>
-              {displayPositionLabels.map(label => {
+              {visiblePositionLabels.map(label => {
                 const key = getPositionKeyByLabel(label);
                 const patrol = getPatrolInfo(day, label);
                 return <div key={label} style={{ padding:'9px 4px', fontSize:12, fontWeight:patrol?950:700, color:day.assignment?(patrol?'#fde047':'#f1f5f9'):'#334155', textAlign:'center', background:patrol?'rgba(250,204,21,.16)':'transparent', borderRadius:6, boxShadow:patrol?'inset 0 0 0 1px rgba(250,204,21,.45)':'none' }}>{day.assignment ? <>{day.assignment[key]}{patrol && <span style={{ marginLeft:3 }}>{patrol.mark}</span>}</> : ''}</div>;
@@ -1641,6 +1650,25 @@ function App() {
             </div>;
           })}
         </div>
+
+        </>}
+        {pageMode==='calendar' && <div style={{display:'grid',gap:10}}>
+          <div style={{display:'flex',gap:6,background:'#0f172a',border:'1px solid #334155',borderRadius:10,padding:4}}>
+            <button onClick={()=>setCalendarMode('personal')} style={{...buttonBase,flex:1,background:calendarMode==='personal'?'#2563eb':'transparent'}}>{calendarBand} 달력</button>
+            <button onClick={()=>setCalendarMode('all')} style={{...buttonBase,flex:1,background:calendarMode==='all'?'#2563eb':'transparent'}}>전체 교대달력</button>
+          </div>
+          <div style={{background:'#111827',border:'1px solid #334155',borderRadius:14,overflow:'hidden'}}>
+            <div style={{padding:'12px 14px',background:'#0f172a',borderBottom:'1px solid #334155',display:'flex',justifyContent:'space-between'}}><strong>{selectedYear}년 {selectedMonth}월 · {shiftSystemLabel}</strong><span style={{fontSize:11,color:'#94a3b8'}}>{calendarMode==='personal'?calendarBand:'A/B/C/D반'}</span></div>
+            {calendarMode==='personal'?<div style={{display:'grid',gridTemplateColumns:'repeat(7,1fr)'}}>
+              {['일','월','화','수','목','금','토'].map(d=><div key={d} style={{padding:8,textAlign:'center',color:'#94a3b8',fontWeight:900,borderBottom:'1px solid #334155'}}>{d}</div>)}
+              {Array.from({length:new Date(selectedYear,selectedMonth-1,1).getDay()},(_,i)=><div key={'e'+i} style={{minHeight:62,borderBottom:'1px solid #1e293b',borderRight:'1px solid #1e293b'}}/>)}
+              {calendarDays.map(day=>{const sh=getShiftForDate(selectedYear,selectedMonth,day,division,calendarBand);const red=isKoreanHoliday(selectedYear,selectedMonth,day)||[0,6].includes(new Date(selectedYear,selectedMonth-1,day).getDay());return <div key={day} style={{minHeight:62,padding:6,borderBottom:'1px solid #1e293b',borderRight:'1px solid #1e293b',background:day===todayDay?'rgba(37,99,235,.18)':'transparent'}}><div style={{fontSize:11,color:red?'#ef4444':'#94a3b8',fontWeight:900}}>{day}</div><div style={{fontSize:22,textAlign:'center',marginTop:6,fontWeight:950,color:sh==='휴'?'#ef4444':sh==='주'?'#2dd4bf':sh==='야'?'#60a5fa':sh==='비'?'#94a3b8':'#f8fafc'}}>{formatShiftShort(sh)}</div></div>})}
+            </div>:<div style={{overflowX:'auto'}}><div style={{minWidth:430}}>
+              <div style={{display:'grid',gridTemplateColumns:'70px repeat(4,1fr)',background:'#0f172a',borderBottom:'1px solid #334155'}}>{['날짜',...EMPLOYEE_BANDS].map(h=><div key={h} style={{padding:9,textAlign:'center',fontWeight:950,color:'#cbd5e1'}}>{h}</div>)}</div>
+              {calendarDays.map(day=><div key={day} style={{display:'grid',gridTemplateColumns:'70px repeat(4,1fr)',borderBottom:'1px solid #1e293b',background:day===todayDay?'rgba(37,99,235,.16)':day%2?'#172032':'transparent'}}><div style={{padding:9,textAlign:'center',fontWeight:950,color:[0,6].includes(new Date(selectedYear,selectedMonth-1,day).getDay())?'#ef4444':'#cbd5e1'}}>{selectedMonth}/{day}</div>{EMPLOYEE_BANDS.map(b=>{const sh=getShiftForDate(selectedYear,selectedMonth,day,division,b);return <div key={b} style={{padding:9,textAlign:'center',fontSize:17,fontWeight:950,color:sh==='휴'?'#ef4444':sh==='주'?'#2dd4bf':sh==='야'?'#60a5fa':sh==='비'?'#94a3b8':'#f8fafc'}}>{formatShiftShort(sh)}</div>})}</div>)}
+            </div></div>}
+          </div>
+        </div>}
 
         <div style={{ marginTop:8, fontSize:11, color:'#86efac', textAlign:'center', background:'#052e16', border:'1px solid #14532d', borderRadius:8, padding:'7px 12px' }}>💾 Firebase 자동 저장 · {syncStatus}</div>
         {undoVisible && undoSnapshot && <button onClick={()=>restoreCore(undoSnapshot)} style={{ ...buttonBase, marginTop:8, width:'100%', background:'#7c2d12', padding:'8px 10px', fontSize:12 }}>↩ 실행 취소</button>}
@@ -1703,7 +1731,21 @@ function App() {
                   <input type="password" inputMode="numeric" pattern="[0-9]*" autoComplete="current-password" value={adminCodeInput} onChange={e=>setAdminCodeInput(cleanAdminCode(e.target.value))} onKeyDown={e=>e.key==='Enter'&&handleAdminLogin()} placeholder="관리자 암호" style={{ ...selectStyle, width:'100%', boxSizing:'border-box', fontSize:16 }} />
                   <button onClick={handleAdminLogin} style={{ ...buttonBase, background:'linear-gradient(135deg,#0ea5e9,#2563eb)', padding:'12px 13px', width:'100%' }}>관리자설정 열기</button>
                 </>}
-              </div> : <div style={{ display:'grid', gap:12 }}>
+              </div> : <div style={{ display:'grid', gap:10 }}>
+                <div style={{color:'#94a3b8',fontSize:11,fontWeight:850}}>모든 메뉴는 기본적으로 닫혀 있습니다.</div>
+                <div style={{background:'#111827',border:'1px solid #334155',borderRadius:14,overflow:'hidden'}}>
+                  <button onClick={()=>setAdminOpenSection(v=>v==='shift'?'':'shift')} style={{width:'100%',border:'none',background:'transparent',color:'#f8fafc',padding:12,display:'flex',justifyContent:'space-between',fontWeight:950}}><span>🔄 교대제 설정</span><span>{adminOpenSection==='shift'?'▼':'▶'}</span></button>
+                  {adminOpenSection==='shift'&&<div style={{padding:12,borderTop:'1px solid #334155',display:'grid',gap:10}}>
+                    {[['THREE_SHIFT','4조3교대'],['TWO_SHIFT_1','4조2교대(1주기)'],['TWO_SHIFT_2','4조2교대(2주기)']].map(([value,label])=><label key={value} style={{display:'flex',alignItems:'center',gap:8,background:shiftSystem.type===value?'rgba(37,99,235,.2)':'#0f172a',border:'1px solid #334155',borderRadius:10,padding:10,fontWeight:900}}><input type="radio" name="shiftType" checked={shiftSystem.type===value} onChange={()=>setShiftSystem(v=>({...v,type:value,offsets:{'A반':0,'B반':value==='TWO_SHIFT_1'?1:2,'C반':value==='TWO_SHIFT_1'?2:4,'D반':value==='TWO_SHIFT_1'?3:6}}))}/>{label}</label>)}
+                    {shiftSystem.type!=='THREE_SHIFT'&&<div style={{display:'grid',gap:7}}><div style={{fontSize:11,color:'#94a3b8'}}>반별 시작 위치 밀고당기기</div>{EMPLOYEE_BANDS.map(b=><div key={b} style={{display:'grid',gridTemplateColumns:'48px 36px 1fr 36px',alignItems:'center',gap:6,background:'#0f172a',border:'1px solid #334155',borderRadius:10,padding:8}}><strong>{b}</strong><button onClick={()=>moveBandCycle(b,-1)} style={{...buttonBase,background:'#334155'}}>‹</button><div style={{textAlign:'center',fontSize:11,fontWeight:950}}>{(SHIFT_SYSTEM_PATTERNS[shiftSystem.type]||[]).map((x,i)=>i===Number(shiftSystem.offsets?.[b]||0)?`[${x}]`:x).join(' · ')}</div><button onClick={()=>moveBandCycle(b,1)} style={{...buttonBase,background:'#334155'}}>›</button></div>)}</div>}
+                    <div style={{fontSize:10,color:'#94a3b8'}}>1주기: 주-야-비-휴 / 2주기: 주-주-휴-야-야-비-휴-휴</div>
+                    <button onClick={saveShiftSystem} style={{...buttonBase,background:'linear-gradient(135deg,#0ea5e9,#2563eb)',padding:11}}>전체 달력에 적용·저장</button>
+                  </div>}
+                </div>
+                <div style={{background:'#111827',border:'1px solid #334155',borderRadius:14,overflow:'hidden'}}>
+                  <button onClick={()=>setAdminOpenSection(v=>v==='holiday'?'':'holiday')} style={{width:'100%',border:'none',background:'transparent',color:'#f8fafc',padding:12,display:'flex',justifyContent:'space-between',fontWeight:950}}><span>📅 공휴일 관리</span><span>{adminOpenSection==='holiday'?'▼':'▶'}</span></button>
+                  {adminOpenSection==='holiday'&&<div style={{padding:12,borderTop:'1px solid #334155',display:'grid',gap:8}}><input type="date" value={holidayForm.date} onChange={e=>setHolidayForm(v=>({...v,date:e.target.value}))} style={{...selectStyle,width:'100%',boxSizing:'border-box'}}/><input value={holidayForm.name} onChange={e=>setHolidayForm(v=>({...v,name:e.target.value}))} placeholder="공휴일 이름" style={{...selectStyle,width:'100%',boxSizing:'border-box'}}/><button onClick={addCustomHoliday} style={{...buttonBase,background:'#2563eb',padding:10}}>공휴일 추가</button>{Object.entries(customHolidays).sort().map(([k,v])=><div key={k} style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:8,background:'#0f172a',border:'1px solid #334155',borderRadius:9,padding:'8px 10px'}}><span><b>{k}</b> · {v}</span><button onClick={()=>removeCustomHoliday(k)} style={{...buttonBase,background:'#7f1d1d',padding:'5px 8px'}}>삭제</button></div>)}</div>}
+                </div>
                 <div style={{ background:'#111827', border:'1px solid #334155', borderRadius:14, overflow:'hidden' }}>
                   <div style={{ padding:'12px 12px', fontWeight:950, fontSize:16, borderBottom:'1px solid #334155' }}>👥 직원 DB 관리</div>
                   <div style={{ margin:'10px 12px 0', fontSize:11, color:'#86efac', background:'#052e16', border:'1px solid #14532d', borderRadius:10, padding:'8px 10px', fontWeight:900 }}>
