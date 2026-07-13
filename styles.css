@@ -51,3 +51,9 @@ html, body {
     display: none !important;
   }
 }
+
+/* v9.1 mobile calendar polish */
+button { -webkit-tap-highlight-color: transparent; }
+@media (max-width: 390px) {
+  body { font-size: 14px; }
+}

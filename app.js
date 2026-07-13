@@ -1,5 +1,5 @@
 const { useState, useEffect, useRef, useCallback } = React;
-const APP_VERSION = "9.0.0-shift-calendar";
+const APP_VERSION = "9.1.0-mobile-calendar";
 // ver5.0: 파일 분리(index.html / app.js / firebase.js / styles.css), ver4.9 기능 포함
 
 
@@ -167,8 +167,9 @@ function countRegularBandWorkDaysBefore(targetDate, division, band) {
     const m = d.getMonth() + 1;
     const day = d.getDate();
     const sh = getShiftForDate(y, m, day, division, band);
-    // 핵심: 휴무일은 순서 회전 카운트에서 제외
-    if (sh !== "휴") count += step;
+    // 4조3교대는 기존 로직 유지. 4조2교대는 비번·휴무 모두 회전 카운트에서 제외.
+    const countable = ACTIVE_SHIFT_SYSTEM.type === 'THREE_SHIFT' ? sh !== "휴" : !["비","휴"].includes(sh);
+    if (countable) count += step;
   }
   return count;
 }
@@ -222,14 +223,16 @@ function countWorkDaysFromBase(targetDate, division, band, shiftFilter = null) {
   if (target > base) {
     for (let d = new Date(base); d < target; d.setDate(d.getDate() + 1)) {
       const sh = getShiftForDate(d.getFullYear(), d.getMonth() + 1, d.getDate(), division, band);
-      if (sh !== "휴" && (!shiftFilter || sh === shiftFilter)) count += 1;
+      const countable = ACTIVE_SHIFT_SYSTEM.type === 'THREE_SHIFT' ? sh !== "휴" : !["비","휴"].includes(sh);
+      if (countable && (!shiftFilter || sh === shiftFilter)) count += 1;
     }
     return count;
   }
 
   for (let d = new Date(target); d < base; d.setDate(d.getDate() + 1)) {
     const sh = getShiftForDate(d.getFullYear(), d.getMonth() + 1, d.getDate(), division, band);
-    if (sh !== "휴" && (!shiftFilter || sh === shiftFilter)) count += 1;
+    const countable = ACTIVE_SHIFT_SYSTEM.type === 'THREE_SHIFT' ? sh !== "휴" : !["비","휴"].includes(sh);
+    if (countable && (!shiftFilter || sh === shiftFilter)) count += 1;
   }
   return -count;
 }
@@ -558,7 +561,7 @@ function App() {
   const [division, setDivision] = useState(initDivision);
   const [selectedYear, setSelectedYear] = useState(today.getFullYear());
   const [selectedMonth, setSelectedMonth] = useState(today.getMonth() + 1);
-  const [pageMode, setPageMode] = useState('home');
+  const [pageMode, setPageMode] = useState(personal.startPage === 'calendar' ? 'calendar' : 'home');
   const [calendarMode, setCalendarMode] = useState('personal');
   const [shiftSystem, setShiftSystem] = useState(() => { try { return JSON.parse(localStorage.getItem('sp_shift_system')||'null') || {type:'THREE_SHIFT',offsets:{'A반':0,'B반':3,'C반':6,'D반':9}}; } catch { return {type:'THREE_SHIFT',offsets:{'A반':0,'B반':3,'C반':6,'D반':9}}; } });
   const [customHolidays, setCustomHolidays] = useState(() => { try { return JSON.parse(localStorage.getItem('sp_custom_holidays')||'{}'); } catch { return {}; } });
@@ -598,6 +601,10 @@ function App() {
   const [personalBand, setPersonalBand] = useState(initBand);
   const [personalDivision, setPersonalDivision] = useState(initDivision);
   const [personalName, setPersonalName] = useState(personal.name || '');
+  const [personalStartPage, setPersonalStartPage] = useState(personal.startPage === 'calendar' ? 'calendar' : 'home');
+  const [personalMemos, setPersonalMemos] = useState(() => { try { return JSON.parse(localStorage.getItem('sp_personal_calendar_memos') || '{}'); } catch { return {}; } });
+  const [memoDate, setMemoDate] = useState('');
+  const [memoDraft, setMemoDraft] = useState('');
 
   const [adminCodeInput, setAdminCodeInput] = useState('');
   const [adminNewCode, setAdminNewCode] = useState('');
@@ -963,12 +970,31 @@ function App() {
 
 
   const savePersonalSettings = () => {
-    localStorage.setItem('sp_personal_settings', JSON.stringify({ band: personalBand, division: personalDivision, name: personalName }));
+    localStorage.setItem('sp_personal_settings', JSON.stringify({ band: personalBand, division: personalDivision, name: personalName, startPage: personalStartPage }));
     setBand(personalBand);
     setDivision(personalDivision);
     setSettingsOpen(false);
     setSavedToast(true);
     setTimeout(() => setSavedToast(false), 1800);
+  };
+
+  const openPersonalMemo = (day) => {
+    const key = dateKey(selectedYear, selectedMonth, day);
+    setMemoDate(key);
+    setMemoDraft(String(personalMemos[key] || ''));
+  };
+
+  const savePersonalMemo = () => {
+    const next = { ...personalMemos };
+    const value = String(memoDraft || '').trim();
+    if (value) next[memoDate] = value;
+    else delete next[memoDate];
+    setPersonalMemos(next);
+    localStorage.setItem('sp_personal_calendar_memos', JSON.stringify(next));
+    setMemoDate('');
+    setMemoDraft('');
+    setSavedToast(true);
+    setTimeout(() => setSavedToast(false), 1200);
   };
 
   const cleanAdminCode = (value) => String(value || '').replace(/[^0-9]/g, '').slice(0, 6);
@@ -1522,7 +1548,6 @@ function App() {
             <button onClick={()=>setPageMode('home')} style={{ ...buttonBase, background:pageMode==='home'?'#2563eb':'#334155', padding:'7px 10px', fontSize:12 }}>🏠 홈</button>
             <button onClick={()=>setPageMode('calendar')} style={{ ...buttonBase, background:pageMode==='calendar'?'#2563eb':'#334155', padding:'7px 10px', fontSize:12 }}>📅 교대달력</button>
             <button onClick={() => { const now = new Date(); setSelectedYear(now.getFullYear()); setSelectedMonth(now.getMonth()+1); }} style={{ ...buttonBase, background:'#334155', padding:'7px 10px', fontSize:12 }}>오늘</button>
-            {pageMode==='home' && <button onClick={() => setEditMode(v=>!v)} style={{ ...buttonBase, background:editMode?'#059669':'#1d4ed8', padding:'7px 10px', fontSize:12 }}>{editMode ? '✔ 저장' : '✏️ 편집'}</button>}
           </div>
         </div>
 
@@ -1578,7 +1603,10 @@ function App() {
                   <div style={{ fontSize:12, fontWeight:900 }}>근무자 선택</div>
                   <div style={{ fontSize:9, color:'#64748b' }}>{band} 직원 DB만 표시 · 중복 선택 방지</div>
                 </div>
-                {workerNamesDirty && <span style={{ fontSize:10, fontWeight:950, color:'#fbbf24', background:'rgba(251,191,36,.12)', border:'1px solid rgba(251,191,36,.35)', borderRadius:999, padding:'4px 7px' }}>변경됨</span>}
+                <div style={{display:'flex',alignItems:'center',gap:6}}>
+                  {workerNamesDirty && <span style={{ fontSize:10, fontWeight:950, color:'#fbbf24', background:'rgba(251,191,36,.12)', border:'1px solid rgba(251,191,36,.35)', borderRadius:999, padding:'4px 7px' }}>변경됨</span>}
+                  <button onClick={() => setEditMode(v=>!v)} style={{ ...buttonBase, background:editMode?'#059669':'#1d4ed8', padding:'6px 9px', fontSize:11 }}>{editMode ? '✔ 완료' : '✏️ 편집'}</button>
+                </div>
               </div>
               <div style={{ display:'grid', gap:5, width:'100%' }}>
                 {inputNames.map((name, idx) => <div key={idx} style={{ display:'grid', gridTemplateColumns:'26px 1fr 26px 26px', alignItems:'center', gap:5 }}>
@@ -1653,21 +1681,22 @@ function App() {
 
         </>}
         {pageMode==='calendar' && <div style={{display:'grid',gap:10}}>
-          <div style={{display:'flex',gap:6,background:'#0f172a',border:'1px solid #334155',borderRadius:10,padding:4}}>
-            <button onClick={()=>setCalendarMode('personal')} style={{...buttonBase,flex:1,background:calendarMode==='personal'?'#2563eb':'transparent'}}>{calendarBand} 달력</button>
-            <button onClick={()=>setCalendarMode('all')} style={{...buttonBase,flex:1,background:calendarMode==='all'?'#2563eb':'transparent'}}>전체 교대달력</button>
+          <div style={{display:'flex',gap:6,background:'rgba(15,23,42,.92)',border:'1px solid #334155',borderRadius:14,padding:4,boxShadow:'0 12px 30px rgba(0,0,0,.22)'}}>
+            <button onClick={()=>setCalendarMode('personal')} style={{...buttonBase,flex:1,padding:'10px 8px',borderRadius:10,background:calendarMode==='personal'?'linear-gradient(135deg,#2563eb,#4f46e5)':'transparent'}}>{calendarBand} 달력</button>
+            <button onClick={()=>setCalendarMode('all')} style={{...buttonBase,flex:1,padding:'10px 8px',borderRadius:10,background:calendarMode==='all'?'linear-gradient(135deg,#2563eb,#4f46e5)':'transparent'}}>전체 교대달력</button>
           </div>
-          <div style={{background:'#111827',border:'1px solid #334155',borderRadius:14,overflow:'hidden'}}>
-            <div style={{padding:'12px 14px',background:'#0f172a',borderBottom:'1px solid #334155',display:'flex',justifyContent:'space-between'}}><strong>{selectedYear}년 {selectedMonth}월 · {shiftSystemLabel}</strong><span style={{fontSize:11,color:'#94a3b8'}}>{calendarMode==='personal'?calendarBand:'A/B/C/D반'}</span></div>
-            {calendarMode==='personal'?<div style={{display:'grid',gridTemplateColumns:'repeat(7,1fr)'}}>
-              {['일','월','화','수','목','금','토'].map(d=><div key={d} style={{padding:8,textAlign:'center',color:'#94a3b8',fontWeight:900,borderBottom:'1px solid #334155'}}>{d}</div>)}
-              {Array.from({length:new Date(selectedYear,selectedMonth-1,1).getDay()},(_,i)=><div key={'e'+i} style={{minHeight:62,borderBottom:'1px solid #1e293b',borderRight:'1px solid #1e293b'}}/>)}
-              {calendarDays.map(day=>{const sh=getShiftForDate(selectedYear,selectedMonth,day,division,calendarBand);const red=isKoreanHoliday(selectedYear,selectedMonth,day)||[0,6].includes(new Date(selectedYear,selectedMonth-1,day).getDay());return <div key={day} style={{minHeight:62,padding:6,borderBottom:'1px solid #1e293b',borderRight:'1px solid #1e293b',background:day===todayDay?'rgba(37,99,235,.18)':'transparent'}}><div style={{fontSize:11,color:red?'#ef4444':'#94a3b8',fontWeight:900}}>{day}</div><div style={{fontSize:22,textAlign:'center',marginTop:6,fontWeight:950,color:sh==='휴'?'#ef4444':sh==='주'?'#2dd4bf':sh==='야'?'#60a5fa':sh==='비'?'#94a3b8':'#f8fafc'}}>{formatShiftShort(sh)}</div></div>})}
-            </div>:<div style={{overflowX:'auto'}}><div style={{minWidth:430}}>
-              <div style={{display:'grid',gridTemplateColumns:'70px repeat(4,1fr)',background:'#0f172a',borderBottom:'1px solid #334155'}}>{['날짜',...EMPLOYEE_BANDS].map(h=><div key={h} style={{padding:9,textAlign:'center',fontWeight:950,color:'#cbd5e1'}}>{h}</div>)}</div>
-              {calendarDays.map(day=><div key={day} style={{display:'grid',gridTemplateColumns:'70px repeat(4,1fr)',borderBottom:'1px solid #1e293b',background:day===todayDay?'rgba(37,99,235,.16)':day%2?'#172032':'transparent'}}><div style={{padding:9,textAlign:'center',fontWeight:950,color:[0,6].includes(new Date(selectedYear,selectedMonth-1,day).getDay())?'#ef4444':'#cbd5e1'}}>{selectedMonth}/{day}</div>{EMPLOYEE_BANDS.map(b=>{const sh=getShiftForDate(selectedYear,selectedMonth,day,division,b);return <div key={b} style={{padding:9,textAlign:'center',fontSize:17,fontWeight:950,color:sh==='휴'?'#ef4444':sh==='주'?'#2dd4bf':sh==='야'?'#60a5fa':sh==='비'?'#94a3b8':'#f8fafc'}}>{formatShiftShort(sh)}</div>})}</div>)}
-            </div></div>}
+          <div style={{background:'#111827',border:'1px solid #334155',borderRadius:18,overflow:'hidden',boxShadow:'0 18px 42px rgba(0,0,0,.25)'}}>
+            <div style={{padding:'13px 14px',background:'linear-gradient(135deg,#0f172a,#172554)',borderBottom:'1px solid #334155',display:'flex',justifyContent:'space-between',alignItems:'center',gap:8}}><strong>{selectedYear}년 {selectedMonth}월 · {shiftSystemLabel}</strong><span style={{fontSize:11,color:'#93c5fd',fontWeight:900}}>{calendarMode==='personal'?calendarBand:'A/B/C/D반'}</span></div>
+            {calendarMode==='personal'?<div style={{display:'grid',gridTemplateColumns:'repeat(7,minmax(0,1fr))'}}>
+              {['일','월','화','수','목','금','토'].map((d,i)=><div key={d} style={{padding:'9px 2px',textAlign:'center',color:i===0?'#f87171':i===6?'#60a5fa':'#94a3b8',fontSize:12,fontWeight:950,borderBottom:'1px solid #334155'}}>{d}</div>)}
+              {Array.from({length:new Date(selectedYear,selectedMonth-1,1).getDay()},(_,i)=><div key={'e'+i} style={{minHeight:70,borderBottom:'1px solid #1e293b',borderRight:'1px solid #1e293b',background:'#0b1220'}}/>)}
+              {calendarDays.map(day=>{const sh=getShiftForDate(selectedYear,selectedMonth,day,division,calendarBand);const dow=new Date(selectedYear,selectedMonth-1,day).getDay();const red=isKoreanHoliday(selectedYear,selectedMonth,day)||dow===0;const memoKey=dateKey(selectedYear,selectedMonth,day);const hasMemo=Boolean(personalMemos[memoKey]);const badge={N:{bg:'#312e81',fg:'#c7d2fe',bd:'#6366f1'},A:{bg:'#78350f',fg:'#fde68a',bd:'#f59e0b'},D:{bg:'#164e63',fg:'#a5f3fc',bd:'#06b6d4'},'주':{bg:'#064e3b',fg:'#a7f3d0',bd:'#10b981'},'야':{bg:'#1e3a8a',fg:'#bfdbfe',bd:'#3b82f6'},'비':{bg:'#334155',fg:'#e2e8f0',bd:'#64748b'},'휴':{bg:'#4c0519',fg:'#fecdd3',bd:'#f43f5e'}}[formatShiftShort(sh)]||{bg:'#1e293b',fg:'#f8fafc',bd:'#475569'};return <button key={day} onClick={()=>openPersonalMemo(day)} style={{appearance:'none',color:'inherit',textAlign:'left',minWidth:0,minHeight:70,padding:'6px 4px',border:'none',borderBottom:'1px solid #1e293b',borderRight:'1px solid #1e293b',background:day===todayDay?'linear-gradient(180deg,rgba(37,99,235,.28),rgba(37,99,235,.10))':'transparent',position:'relative'}}><div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}><span style={{fontSize:11,color:red?'#f87171':dow===6?'#60a5fa':'#94a3b8',fontWeight:950}}>{day}</span>{hasMemo&&<span title="메모 있음" style={{width:6,height:6,borderRadius:999,background:'#fbbf24',boxShadow:'0 0 0 2px rgba(251,191,36,.15)'}}/>}</div><div style={{display:'flex',justifyContent:'center',marginTop:7}}><span style={{minWidth:30,textAlign:'center',padding:'5px 7px',borderRadius:999,background:badge.bg,color:badge.fg,border:`1px solid ${badge.bd}`,fontSize:14,fontWeight:950,boxShadow:'0 5px 14px rgba(0,0,0,.22)'}}>{formatShiftShort(sh)}</span></div></button>})}
+            </div>:<div style={{width:'100%',overflow:'hidden'}}>
+              <div style={{display:'grid',gridTemplateColumns:'52px repeat(4,minmax(0,1fr))',background:'#0f172a',borderBottom:'1px solid #334155'}}>{['날짜',...EMPLOYEE_BANDS].map(h=><div key={h} style={{padding:'9px 1px',textAlign:'center',fontSize:11,fontWeight:950,color:'#cbd5e1'}}>{h}</div>)}</div>
+              {calendarDays.map(day=>{const dow=new Date(selectedYear,selectedMonth-1,day).getDay();const red=isKoreanHoliday(selectedYear,selectedMonth,day)||dow===0;return <div key={day} style={{display:'grid',gridTemplateColumns:'52px repeat(4,minmax(0,1fr))',borderBottom:'1px solid #1e293b',background:day===todayDay?'rgba(37,99,235,.16)':day%2?'#172032':'transparent'}}><div style={{padding:'8px 1px',textAlign:'center',fontSize:11,fontWeight:950,color:red?'#f87171':dow===6?'#60a5fa':'#cbd5e1'}}>{day}<span style={{fontSize:9,color:'#64748b'}}>({DOW_KR[dow]})</span></div>{EMPLOYEE_BANDS.map(b=>{const sh=formatShiftShort(getShiftForDate(selectedYear,selectedMonth,day,division,b));const badge={N:{bg:'#312e81',fg:'#c7d2fe',bd:'#6366f1'},A:{bg:'#78350f',fg:'#fde68a',bd:'#f59e0b'},D:{bg:'#164e63',fg:'#a5f3fc',bd:'#06b6d4'},'주':{bg:'#064e3b',fg:'#a7f3d0',bd:'#10b981'},'야':{bg:'#1e3a8a',fg:'#bfdbfe',bd:'#3b82f6'},'비':{bg:'#334155',fg:'#e2e8f0',bd:'#64748b'},'휴':{bg:'#4c0519',fg:'#fecdd3',bd:'#f43f5e'}}[sh]||{bg:'#1e293b',fg:'#f8fafc',bd:'#475569'};return <div key={b} style={{padding:'6px 1px',display:'flex',alignItems:'center',justifyContent:'center',minWidth:0}}><span style={{width:30,textAlign:'center',padding:'4px 0',borderRadius:999,background:badge.bg,color:badge.fg,border:`1px solid ${badge.bd}`,fontSize:12,fontWeight:950}}>{sh}</span></div>})}</div>})}
+            </div>}
           </div>
+          {calendarMode==='personal'&&<div style={{fontSize:11,color:'#94a3b8',textAlign:'center'}}>날짜를 누르면 개인 메모를 작성할 수 있습니다. 메모는 이 기기에만 저장됩니다.</div>}
         </div>}
 
         <div style={{ marginTop:8, fontSize:11, color:'#86efac', textAlign:'center', background:'#052e16', border:'1px solid #14532d', borderRadius:8, padding:'7px 12px' }}>💾 Firebase 자동 저장 · {syncStatus}</div>
@@ -1675,6 +1704,14 @@ function App() {
         <div style={{ marginTop:22, paddingTop:18, borderTop:'1px solid #334155', textAlign:'center', color:'#94a3b8', fontWeight:800 }}>Made by Hyungdai<br/><span style={{ color:'#f8fafc', fontSize:24, fontWeight:950 }}>SEUL-POLICE</span></div>
 
         {savedToast && <div style={{ position:'fixed', left:'50%', bottom:22, transform:'translateX(-50%)', zIndex:1200, background:'#052e16', border:'1px solid #16a34a', color:'#dcfce7', borderRadius:999, padding:'9px 14px', fontSize:13, fontWeight:950, boxShadow:'0 10px 30px rgba(0,0,0,.35)' }}>🟢 저장완료</div>}
+
+        {memoDate && <div style={{position:'fixed',inset:0,zIndex:1100,background:'rgba(2,6,23,.82)',display:'flex',alignItems:'center',justifyContent:'center',padding:14}}>
+          <div style={{width:'min(400px,100%)',background:'#0f172a',border:'1px solid #334155',borderRadius:18,padding:14,boxShadow:'0 24px 80px rgba(0,0,0,.5)'}}>
+            <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:10}}><div><div style={{fontSize:18,fontWeight:950}}>개인 메모</div><div style={{fontSize:11,color:'#94a3b8',marginTop:2}}>{memoDate} · 이 기기에만 저장</div></div><button onClick={()=>setMemoDate('')} style={{...buttonBase,width:40,height:40,background:'#334155',fontSize:18}}>×</button></div>
+            <textarea autoFocus value={memoDraft} onChange={e=>setMemoDraft(e.target.value)} placeholder="예: 연차, 약속, 교대 요청 등" style={{...selectStyle,width:'100%',minHeight:130,resize:'vertical',boxSizing:'border-box',lineHeight:1.5}}/>
+            <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8,marginTop:10}}><button onClick={()=>{setMemoDraft('');}} style={{...buttonBase,background:'#7f1d1d',padding:10}}>내용 지우기</button><button onClick={savePersonalMemo} style={{...buttonBase,background:'linear-gradient(135deg,#0ea5e9,#2563eb)',padding:10}}>메모 저장</button></div>
+          </div>
+        </div>}
 
         {settingsOpen && <div style={{ position:'fixed', inset:0, background:'rgba(2,6,23,.78)', zIndex:999, display:'flex', alignItems:'center', justifyContent:'center', padding:10 }}>
           <div style={{ width:'min(430px,100%)', maxHeight:'86vh', overflow:'auto', background:'#0f172a', border:'1px solid #334155', borderRadius:18, padding:14, boxShadow:'0 20px 80px rgba(0,0,0,.45)' }}>
@@ -1698,6 +1735,11 @@ function App() {
               </select>
               <label style={{ fontSize:12, color:'#94a3b8', fontWeight:900 }}>나의 근무지</label>
               <select value={personalDivision} onChange={e=>setPersonalDivision(e.target.value)} style={selectStyle}>{['1발전','2발전'].map(d=><option key={d}>{d}</option>)}</select>
+              <label style={{ fontSize:12, color:'#94a3b8', fontWeight:900 }}>사이트 접속 시 첫 화면</label>
+              <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8}}>
+                <button onClick={()=>setPersonalStartPage('home')} style={{...buttonBase,padding:'10px 8px',background:personalStartPage==='home'?'#2563eb':'#1e293b',border:'1px solid #334155'}}>🏠 홈</button>
+                <button onClick={()=>setPersonalStartPage('calendar')} style={{...buttonBase,padding:'10px 8px',background:personalStartPage==='calendar'?'#2563eb':'#1e293b',border:'1px solid #334155'}}>📅 교대달력</button>
+              </div>
               <button onClick={savePersonalSettings} style={{ ...buttonBase, background:'linear-gradient(135deg,#0ea5e9,#2563eb)', padding:'11px 14px' }}>개인설정 저장</button>
             </div>}
 
@@ -1746,8 +1788,11 @@ function App() {
                   <button onClick={()=>setAdminOpenSection(v=>v==='holiday'?'':'holiday')} style={{width:'100%',border:'none',background:'transparent',color:'#f8fafc',padding:12,display:'flex',justifyContent:'space-between',fontWeight:950}}><span>📅 공휴일 관리</span><span>{adminOpenSection==='holiday'?'▼':'▶'}</span></button>
                   {adminOpenSection==='holiday'&&<div style={{padding:12,borderTop:'1px solid #334155',display:'grid',gap:8}}><input type="date" value={holidayForm.date} onChange={e=>setHolidayForm(v=>({...v,date:e.target.value}))} style={{...selectStyle,width:'100%',boxSizing:'border-box'}}/><input value={holidayForm.name} onChange={e=>setHolidayForm(v=>({...v,name:e.target.value}))} placeholder="공휴일 이름" style={{...selectStyle,width:'100%',boxSizing:'border-box'}}/><button onClick={addCustomHoliday} style={{...buttonBase,background:'#2563eb',padding:10}}>공휴일 추가</button>{Object.entries(customHolidays).sort().map(([k,v])=><div key={k} style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:8,background:'#0f172a',border:'1px solid #334155',borderRadius:9,padding:'8px 10px'}}><span><b>{k}</b> · {v}</span><button onClick={()=>removeCustomHoliday(k)} style={{...buttonBase,background:'#7f1d1d',padding:'5px 8px'}}>삭제</button></div>)}</div>}
                 </div>
+                <div style={{background:'#111827',border:'1px solid #334155',borderRadius:14,overflow:'hidden'}}>
+                  <button onClick={()=>setAdminOpenSection(v=>v==='employees'?'':'employees')} style={{width:'100%',border:'none',background:'transparent',color:'#f8fafc',padding:12,display:'flex',justifyContent:'space-between',fontWeight:950}}><span>👥 직원 DB 관리</span><span>{adminOpenSection==='employees'?'▼':'▶'}</span></button>
+                  {adminOpenSection==='employees'&&<div style={{paddingBottom:10,borderTop:'1px solid #334155'}}>
                 <div style={{ background:'#111827', border:'1px solid #334155', borderRadius:14, overflow:'hidden' }}>
-                  <div style={{ padding:'12px 12px', fontWeight:950, fontSize:16, borderBottom:'1px solid #334155' }}>👥 직원 DB 관리</div>
+                  
                   <div style={{ margin:'10px 12px 0', fontSize:11, color:'#86efac', background:'#052e16', border:'1px solid #14532d', borderRadius:10, padding:'8px 10px', fontWeight:900 }}>
                     🟢 Firebase 연결됨 · 직원DB {activeEmployeeList.length}명 동기화
                   </div>
@@ -1785,8 +1830,12 @@ function App() {
                   })}
                 </div>
 
-                <div style={{ background:'#111827', border:'1px solid #334155', borderRadius:14, padding:12 }}>
-                  <div style={{ fontWeight:950, marginBottom:10 }}>🚔 순찰설정</div>
+                  </div>}
+                </div>
+
+                <div style={{background:'#111827',border:'1px solid #334155',borderRadius:14,overflow:'hidden'}}>
+                  <button onClick={()=>setAdminOpenSection(v=>v==='patrol'?'':'patrol')} style={{width:'100%',border:'none',background:'transparent',color:'#f8fafc',padding:12,display:'flex',justifyContent:'space-between',fontWeight:950}}><span>🚔 순찰설정</span><span>{adminOpenSection==='patrol'?'▼':'▶'}</span></button>
+                  {adminOpenSection==='patrol'&&<div style={{padding:12,borderTop:'1px solid #334155'}}>
                   <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:8, marginBottom:10 }}>
                     <div>
                       <div style={{ fontSize:11, color:'#94a3b8', fontWeight:900, marginBottom:5 }}>반 선택</div>
@@ -1823,8 +1872,11 @@ function App() {
                   </div>
                 </div>
 
-                <div style={{ background:'#111827', border:'1px solid #334155', borderRadius:14, padding:12 }}>
-                  <div style={{ fontWeight:950, marginBottom:10 }}>📢 공지사항 관리</div>
+                  </div>}
+                </div>
+                <div style={{background:'#111827',border:'1px solid #334155',borderRadius:14,overflow:'hidden'}}>
+                  <button onClick={()=>setAdminOpenSection(v=>v==='notice'?'':'notice')} style={{width:'100%',border:'none',background:'transparent',color:'#f8fafc',padding:12,display:'flex',justifyContent:'space-between',fontWeight:950}}><span>📢 공지사항 관리</span><span>{adminOpenSection==='notice'?'▼':'▶'}</span></button>
+                  {adminOpenSection==='notice'&&<div style={{padding:12,borderTop:'1px solid #334155'}}>
                   <textarea value={noticeForm.text} onChange={e=>setNoticeForm(f=>({...f,text:e.target.value}))} placeholder="전체 사용자에게 표시할 공지사항" style={{ ...selectStyle, width:'100%', minHeight:78, resize:'vertical', boxSizing:'border-box', lineHeight:1.45 }} />
                   <div style={{ display:'grid', gap:8, marginTop:8 }}>
                     <label style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:6, fontSize:13, fontWeight:900, color:'#cbd5e1', background:'#0f172a', border:'1px solid #334155', borderRadius:10, padding:'9px 10px' }}>
@@ -1840,17 +1892,23 @@ function App() {
                   </div>
                 </div>
 
-                <div style={{ background:'#111827', border:'1px solid #334155', borderRadius:14, padding:12 }}>
-                  <div style={{ fontWeight:950, marginBottom:8 }}>👮 근무자 수 설정</div>
+                  </div>}
+                </div>
+                <div style={{background:'#111827',border:'1px solid #334155',borderRadius:14,overflow:'hidden'}}>
+                  <button onClick={()=>setAdminOpenSection(v=>v==='workers'?'':'workers')} style={{width:'100%',border:'none',background:'transparent',color:'#f8fafc',padding:12,display:'flex',justifyContent:'space-between',fontWeight:950}}><span>👮 근무자 수 설정</span><span>{adminOpenSection==='workers'?'▼':'▶'}</span></button>
+                  {adminOpenSection==='workers'&&<div style={{padding:12,borderTop:'1px solid #334155'}}>
                   <div style={{ display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:6 }}>{[4,5,6].map(n=><button key={n} onClick={()=>handleWorkerCountChange(n)} style={{ ...buttonBase, height:38, background:workerCount===n?'#2563eb':'#334155' }}>{n}명</button>)}</div>
+                  </div>}
                 </div>
                 <div style={{ textAlign:'center', color:'#64748b', fontSize:11, fontWeight:800 }}>Seul Police · v{APP_VERSION}</div>
-                <div style={{ background:'#111827', border:'1px solid #334155', borderRadius:14, padding:12, display:'grid', gap:8 }}>
-                  <div style={{ fontWeight:950, fontSize:15, color:'#f8fafc' }}>🔐 관리자 암호 변경</div>
+                <div style={{background:'#111827',border:'1px solid #334155',borderRadius:14,overflow:'hidden'}}>
+                  <button onClick={()=>setAdminOpenSection(v=>v==='password'?'':'password')} style={{width:'100%',border:'none',background:'transparent',color:'#f8fafc',padding:12,display:'flex',justifyContent:'space-between',fontWeight:950}}><span>🔐 관리자 암호 변경</span><span>{adminOpenSection==='password'?'▼':'▶'}</span></button>
+                  {adminOpenSection==='password'&&<div style={{padding:12,borderTop:'1px solid #334155',display:'grid',gap:8}}>
                   <input type="password" inputMode="numeric" pattern="[0-9]*" value={adminChangeCode.current} onChange={e=>setAdminChangeCode(v=>({...v,current:cleanAdminCode(e.target.value)}))} placeholder="현재 암호" style={{ ...selectStyle, width:'100%', boxSizing:'border-box', fontSize:16 }} />
                   <input type="password" inputMode="numeric" pattern="[0-9]*" value={adminChangeCode.next} onChange={e=>setAdminChangeCode(v=>({...v,next:cleanAdminCode(e.target.value)}))} placeholder="새 암호 4~6자리" style={{ ...selectStyle, width:'100%', boxSizing:'border-box', fontSize:16 }} />
                   <input type="password" inputMode="numeric" pattern="[0-9]*" value={adminChangeCode.confirm} onChange={e=>setAdminChangeCode(v=>({...v,confirm:cleanAdminCode(e.target.value)}))} placeholder="새 암호 확인" style={{ ...selectStyle, width:'100%', boxSizing:'border-box', fontSize:16 }} />
                   <button onClick={handleAdminPasswordChange} style={{ ...buttonBase, background:'#334155', padding:'10px 12px' }}>암호 변경</button>
+                  </div>}
                 </div>
                 <button onClick={()=>setIsAdminMode(false)} style={{ ...buttonBase, background:'#7f1d1d', padding:'11px 12px' }}>관리자모드 종료</button>
               </div>}
