@@ -1,5 +1,5 @@
 const { useState, useEffect, useRef, useCallback } = React;
-const APP_VERSION = "9.1.0-mobile-calendar";
+const APP_VERSION = "9.1.1-hotfix";
 // ver5.0: 파일 분리(index.html / app.js / firebase.js / styles.css), ver4.9 기능 포함
 
 
@@ -1788,11 +1788,8 @@ function App() {
                   <button onClick={()=>setAdminOpenSection(v=>v==='holiday'?'':'holiday')} style={{width:'100%',border:'none',background:'transparent',color:'#f8fafc',padding:12,display:'flex',justifyContent:'space-between',fontWeight:950}}><span>📅 공휴일 관리</span><span>{adminOpenSection==='holiday'?'▼':'▶'}</span></button>
                   {adminOpenSection==='holiday'&&<div style={{padding:12,borderTop:'1px solid #334155',display:'grid',gap:8}}><input type="date" value={holidayForm.date} onChange={e=>setHolidayForm(v=>({...v,date:e.target.value}))} style={{...selectStyle,width:'100%',boxSizing:'border-box'}}/><input value={holidayForm.name} onChange={e=>setHolidayForm(v=>({...v,name:e.target.value}))} placeholder="공휴일 이름" style={{...selectStyle,width:'100%',boxSizing:'border-box'}}/><button onClick={addCustomHoliday} style={{...buttonBase,background:'#2563eb',padding:10}}>공휴일 추가</button>{Object.entries(customHolidays).sort().map(([k,v])=><div key={k} style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:8,background:'#0f172a',border:'1px solid #334155',borderRadius:9,padding:'8px 10px'}}><span><b>{k}</b> · {v}</span><button onClick={()=>removeCustomHoliday(k)} style={{...buttonBase,background:'#7f1d1d',padding:'5px 8px'}}>삭제</button></div>)}</div>}
                 </div>
-                <div style={{background:'#111827',border:'1px solid #334155',borderRadius:14,overflow:'hidden'}}>
-                  <button onClick={()=>setAdminOpenSection(v=>v==='employees'?'':'employees')} style={{width:'100%',border:'none',background:'transparent',color:'#f8fafc',padding:12,display:'flex',justifyContent:'space-between',fontWeight:950}}><span>👥 직원 DB 관리</span><span>{adminOpenSection==='employees'?'▼':'▶'}</span></button>
-                  {adminOpenSection==='employees'&&<div style={{paddingBottom:10,borderTop:'1px solid #334155'}}>
                 <div style={{ background:'#111827', border:'1px solid #334155', borderRadius:14, overflow:'hidden' }}>
-                  
+                  <div style={{ padding:'12px 12px', fontWeight:950, fontSize:16, borderBottom:'1px solid #334155' }}>👥 직원 DB 관리</div>
                   <div style={{ margin:'10px 12px 0', fontSize:11, color:'#86efac', background:'#052e16', border:'1px solid #14532d', borderRadius:10, padding:'8px 10px', fontWeight:900 }}>
                     🟢 Firebase 연결됨 · 직원DB {activeEmployeeList.length}명 동기화
                   </div>
@@ -1830,12 +1827,8 @@ function App() {
                   })}
                 </div>
 
-                  </div>}
-                </div>
-
-                <div style={{background:'#111827',border:'1px solid #334155',borderRadius:14,overflow:'hidden'}}>
-                  <button onClick={()=>setAdminOpenSection(v=>v==='patrol'?'':'patrol')} style={{width:'100%',border:'none',background:'transparent',color:'#f8fafc',padding:12,display:'flex',justifyContent:'space-between',fontWeight:950}}><span>🚔 순찰설정</span><span>{adminOpenSection==='patrol'?'▼':'▶'}</span></button>
-                  {adminOpenSection==='patrol'&&<div style={{padding:12,borderTop:'1px solid #334155'}}>
+                <div style={{ background:'#111827', border:'1px solid #334155', borderRadius:14, padding:12 }}>
+                  <div style={{ fontWeight:950, marginBottom:10 }}>🚔 순찰설정</div>
                   <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:8, marginBottom:10 }}>
                     <div>
                       <div style={{ fontSize:11, color:'#94a3b8', fontWeight:900, marginBottom:5 }}>반 선택</div>
@@ -1872,11 +1865,8 @@ function App() {
                   </div>
                 </div>
 
-                  </div>}
-                </div>
-                <div style={{background:'#111827',border:'1px solid #334155',borderRadius:14,overflow:'hidden'}}>
-                  <button onClick={()=>setAdminOpenSection(v=>v==='notice'?'':'notice')} style={{width:'100%',border:'none',background:'transparent',color:'#f8fafc',padding:12,display:'flex',justifyContent:'space-between',fontWeight:950}}><span>📢 공지사항 관리</span><span>{adminOpenSection==='notice'?'▼':'▶'}</span></button>
-                  {adminOpenSection==='notice'&&<div style={{padding:12,borderTop:'1px solid #334155'}}>
+                <div style={{ background:'#111827', border:'1px solid #334155', borderRadius:14, padding:12 }}>
+                  <div style={{ fontWeight:950, marginBottom:10 }}>📢 공지사항 관리</div>
                   <textarea value={noticeForm.text} onChange={e=>setNoticeForm(f=>({...f,text:e.target.value}))} placeholder="전체 사용자에게 표시할 공지사항" style={{ ...selectStyle, width:'100%', minHeight:78, resize:'vertical', boxSizing:'border-box', lineHeight:1.45 }} />
                   <div style={{ display:'grid', gap:8, marginTop:8 }}>
                     <label style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:6, fontSize:13, fontWeight:900, color:'#cbd5e1', background:'#0f172a', border:'1px solid #334155', borderRadius:10, padding:'9px 10px' }}>
@@ -1892,23 +1882,17 @@ function App() {
                   </div>
                 </div>
 
-                  </div>}
-                </div>
-                <div style={{background:'#111827',border:'1px solid #334155',borderRadius:14,overflow:'hidden'}}>
-                  <button onClick={()=>setAdminOpenSection(v=>v==='workers'?'':'workers')} style={{width:'100%',border:'none',background:'transparent',color:'#f8fafc',padding:12,display:'flex',justifyContent:'space-between',fontWeight:950}}><span>👮 근무자 수 설정</span><span>{adminOpenSection==='workers'?'▼':'▶'}</span></button>
-                  {adminOpenSection==='workers'&&<div style={{padding:12,borderTop:'1px solid #334155'}}>
+                <div style={{ background:'#111827', border:'1px solid #334155', borderRadius:14, padding:12 }}>
+                  <div style={{ fontWeight:950, marginBottom:8 }}>👮 근무자 수 설정</div>
                   <div style={{ display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:6 }}>{[4,5,6].map(n=><button key={n} onClick={()=>handleWorkerCountChange(n)} style={{ ...buttonBase, height:38, background:workerCount===n?'#2563eb':'#334155' }}>{n}명</button>)}</div>
-                  </div>}
                 </div>
                 <div style={{ textAlign:'center', color:'#64748b', fontSize:11, fontWeight:800 }}>Seul Police · v{APP_VERSION}</div>
-                <div style={{background:'#111827',border:'1px solid #334155',borderRadius:14,overflow:'hidden'}}>
-                  <button onClick={()=>setAdminOpenSection(v=>v==='password'?'':'password')} style={{width:'100%',border:'none',background:'transparent',color:'#f8fafc',padding:12,display:'flex',justifyContent:'space-between',fontWeight:950}}><span>🔐 관리자 암호 변경</span><span>{adminOpenSection==='password'?'▼':'▶'}</span></button>
-                  {adminOpenSection==='password'&&<div style={{padding:12,borderTop:'1px solid #334155',display:'grid',gap:8}}>
+                <div style={{ background:'#111827', border:'1px solid #334155', borderRadius:14, padding:12, display:'grid', gap:8 }}>
+                  <div style={{ fontWeight:950, fontSize:15, color:'#f8fafc' }}>🔐 관리자 암호 변경</div>
                   <input type="password" inputMode="numeric" pattern="[0-9]*" value={adminChangeCode.current} onChange={e=>setAdminChangeCode(v=>({...v,current:cleanAdminCode(e.target.value)}))} placeholder="현재 암호" style={{ ...selectStyle, width:'100%', boxSizing:'border-box', fontSize:16 }} />
                   <input type="password" inputMode="numeric" pattern="[0-9]*" value={adminChangeCode.next} onChange={e=>setAdminChangeCode(v=>({...v,next:cleanAdminCode(e.target.value)}))} placeholder="새 암호 4~6자리" style={{ ...selectStyle, width:'100%', boxSizing:'border-box', fontSize:16 }} />
                   <input type="password" inputMode="numeric" pattern="[0-9]*" value={adminChangeCode.confirm} onChange={e=>setAdminChangeCode(v=>({...v,confirm:cleanAdminCode(e.target.value)}))} placeholder="새 암호 확인" style={{ ...selectStyle, width:'100%', boxSizing:'border-box', fontSize:16 }} />
                   <button onClick={handleAdminPasswordChange} style={{ ...buttonBase, background:'#334155', padding:'10px 12px' }}>암호 변경</button>
-                  </div>}
                 </div>
                 <button onClick={()=>setIsAdminMode(false)} style={{ ...buttonBase, background:'#7f1d1d', padding:'11px 12px' }}>관리자모드 종료</button>
               </div>}
